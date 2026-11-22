@@ -2,7 +2,8 @@
 
 本目录是《挑战课题—Python 编程》任务 1（网络程序设计）的实现：用 Python 标准库 `socket` 写一个
 **点对点实时双向通信**框架。TCP 版为聊天室（多客户端广播 + 私聊 + 用户列表），TCP/UDP 两套实现
-用于对照题目中的协议差异。全程只用标准库，无第三方依赖。
+用于对照题目中的协议差异；另提供 tkinter 图形界面（服务器监控台 + 客户端），对应题目加分项。
+全程只用标准库，无第三方依赖。
 
 > 题目原文见仓库根目录 `挑战课题--Python编程--任务1.docx`（只读）。
 > 课程知识点：socket 概念与 C/S 模型、TCP 三次握手、TCP/UDP 对比、socket 工作流程
@@ -29,9 +30,11 @@
 src/task1_socket_chat/
 ├─ protocol.py   # 消息模型 + 长度前缀分帧（TCP 粘包处理），TCP/UDP 共用
 ├─ config.py     # 默认端口、长度限制、三个 dataclass 配置（含参数校验）
-├─ server.py     # TCP 聊天服务器：多线程、广播、私聊、心跳、重名处理
+├─ server.py     # TCP 聊天服务器：多线程、广播、私聊、心跳、重名处理、管理接口
 ├─ client.py     # TCP 客户端：收发双线程、命令行交互、/who /to /help /quit
 ├─ udp_chat.py   # UDP 中继 + UDP 节点，演示无连接协议的差异
+├─ gui_server.py # tkinter 服务器监控台：在线列表、踢人、公告、终端日志
+├─ gui_client.py # tkinter 聊天客户端：聊天记录、在线列表、群聊/私聊
 └─ __init__.py   # 对外导出协议层 API
 ```
 
@@ -132,7 +135,38 @@ UDP 版没有 `accept()`：中继收到数据报后按源地址回送/转发，�
 `peer_ttl` 秒无消息即从列表移除。可对比说明：UDP 不保证送达，若丢包则对方收不到，
 也没有 TCP 的重传与保序，但开销小、天然支持一对多。
 
-### 4.4 局域网实测
+### 4.5 图形界面（GUI）
+
+服务器端与客户端是两个独立窗口，各自启动：
+
+```bash
+# 窗口 1：服务器监控台（先启动，自动监听，也可在界面里改地址/端口后点「启动服务」）
+python -m src.task1_socket_chat.gui_server --port 9000
+
+# 窗口 2、3：客户端（每个窗口填服务器地址/端口/昵称，点「连接」）
+python -m src.task1_socket_chat.gui_client --port 9000 --name alice
+python -m src.task1_socket_chat.gui_client --port 9000 --name bob
+```
+
+服务器监控台能做什么：
+
+- **在线客户端表**：昵称、IP:端口、在线时长，每 1 秒刷新；双击某行直接踢出，也可选中后点「踢出选中」。
+- **终端监控**：把服务器进程的 `logging` 输出（监听、加入、离开、广播内容、公告、踢出、错误）
+  镜像到窗口里的黑色文本区，与命令行输出一致；可勾选自动滚动、清空、保存为日志文件。
+- **发公告**：弹窗输入文字，广播给所有在线客户端。
+- 状态栏显示在线人数；点「停止服务」后客户端会收到「服务器关闭」系统消息。
+
+客户端窗口能做什么：
+
+- 聊天记录区按类型着色：自己发的蓝色、他人消息黑色、私聊紫色、系统提示灰色、错误红色。
+- 右侧在线用户列表；选中某人后输入框上方显示「发送给：某人（私聊）」，直接回车即私聊；
+  点「群聊」取消选中，恢复群发。
+- 连接在后台线程执行，界面不会卡死；断线只提示一次，可重新点「连接」。
+
+GUI 只是 `ChatServer` / `ChatClient` 的一层壳：网络与协议逻辑与命令行版完全共用，
+所以两者的消息格式、心跳、踢人、公告行为一致。
+
+### 4.6 局域网实测
 
 把服务端 `/ 中继` 的 `--host` 改为 `0.0.0.0`，客户端 `--host` 改为服务器局域网 IP，
 并在服务器防火墙放行对应 TCP/UDP 端口：
@@ -149,8 +183,9 @@ python -m compileall -q src tests
 python -m unittest discover -s tests -v
 ```
 
-当前结果：`Ran 60 tests ... OK`（其中协议 30 项、TCP 服务端 13 项、UDP 7 项、日志工具 16 项；
-全部用回环 socket，端口由系统分配，不依赖外部网络）。
+当前结果：`Ran 69 tests ... OK`，分布在 `test_protocol.py`、`test_chat_server.py`（含管理接口与
+客户端回调）、`test_udp_chat.py`、`test_gui.py`（无显示环境自动跳过）、`test_devlog.py`；
+全部用回环 socket，端口由系统分配，不依赖外部网络。
 
 ## 6. 设计决策
 
@@ -161,11 +196,16 @@ python -m unittest discover -s tests -v
   无法做到"实时双向"。
 - **心跳**：`settimeout(ping_interval)` 既做超时又做保活，连续 `max_missed_pings` 次无响应才断开，
   避免客户端短暂卡顿就被踢。
-- **广播排除发送者**：发送者本地已回显自己的消息，服务端不再回传，避免重复显示。
+- **广播排除发送者**：发送者本地回显自己的消息，服务端不再回传，避免重复显示。
+- **GUI 复用 CLI 的网络层**：GUI 不做自己的 socket 处理，只给 `ChatClient` 挂 `on_message` /
+  `on_disconnect` 回调、给 `ChatServer` 加 `online_users()` / `kick()` / `broadcast_system()`，
+  避免两套实现行为漂移；服务器「终端监控」用 `logging.Handler` + 队列把日志搬到 Tk 主线程，
+  不在工作线程里碰控件。
 
 ## 7. 已知限制
 
 - 明文传输、无认证与加密：仅用于课程演示，不能直接用于真实环境。
 - 群聊是单房间、无历史消息；服务端不落盘，重启即清空。
 - UDP 中继无可靠性保证，丢包即丢消息（这正是与 TCP 对比的演示点）。
+- 图形界面需要桌面环境（Windows/macOS/Linux 有显示服务）；无显示环境（如纯 SSH）只能跑命令行版。
 - Windows 控制台默认 GBK，若中文乱码请先执行 `chcp 65001` 并设置 `PYTHONIOENCODING=utf-8`。

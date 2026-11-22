@@ -6,6 +6,15 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 02:22 · T1 · 图形界面：服务器监控台与聊天客户端
+- 目标: 给任务 1 增加图形界面（对应题目加分项），明确区分服务器端与客户端两个程序；服务器端要能直接监控终端输出、查看在线用户、踢人与发公告
+- 改动: `src/task1_socket_chat/gui_server.py`(新增)、`src/task1_socket_chat/gui_client.py`(新增)、`src/task1_socket_chat/server.py`(新增 online_users/user_count/broadcast_system/kick，ClientSession 记录 since)、`src/task1_socket_chat/client.py`(新增 on_message/on_disconnect 回调、echo、request_users)、`tests/test_chat_server.py`(新增 AdminTests 与回调测试)、`tests/test_gui.py`(新增)、`src/task1_socket_chat/README.md`(补 GUI 用法)、`AGENTS.md`(结构树补两个 GUI 文件)
+- 验证: `python -m compileall -q src tests` → exit 0；`python -m unittest discover -s tests` → `Ran 69 tests in 4.794s` `OK`；`python -m src.task1_socket_chat.gui_server --port 9106` + 两个 `gui_client`/脚本客户端 → 服务器窗口「在线客户端」显示 alice/bob 与时长，终端监控区依次出现 `监听 127.0.0.1:9106`、`以昵称 alice 加入`、`[广播] alice: 你好，我是 alice`、`[公告] 今晚 22:00 系统维护…`，客户端窗口显示私聊紫色消息与「发送给：bob（私聊）」
+- 决策: 用 tkinter 而非 Web/Qt，因为标准库自带、无需安装依赖，课程演示直接 `python -m` 就能开窗；GUI 不做自己的 socket 处理，只给 `ChatClient` 挂回调、给 `ChatServer` 加管理方法，保证 GUI 与命令行行为一致；服务器「终端监控」用 `logging.Handler` + `queue` 把日志搬回 Tk 主线程，避免在工作线程里操作控件
+- 问题: 首轮截图发现底部状态栏/输入栏被 PanedWindow 挤出窗口、「群聊」按钮被 Listbox 遮挡、地址列被截断 → 改为先 pack 底部控件与按钮、再让中间面板 expand，地址列加宽到 160；「在线时长」表头仍被截断 → 改名为「时长」
+- 下一步: 设计报告与运行截图（用户已说明暂缓）；GUI 后续可加字体缩放与深色主题
+
+
 ## 2026-11-23 02:11 · T1 · 修复心跳 pong 被当作未知消息类型
 - 目标: 消除空闲时客户端每隔一个心跳周期收到的 `! 服务器: 未知消息类型: pong`
 - 改动: `src/task1_socket_chat/server.py`（`_dispatch` 增加 `pong` 分支，静默接受心跳应答）；`tests/test_chat_server.py`（`test_server_sends_ping_when_idle_and_accepts_pong` 改为收集 pong 之后的全部消息并断言无 error）

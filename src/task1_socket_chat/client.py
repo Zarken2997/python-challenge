@@ -12,6 +12,7 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 from .config import MAX_TEXT_LENGTH, ClientConfig, sanitize_name
 from .protocol import ConnectionClosed, Message, ProtocolError, read_message, send_message
@@ -60,10 +61,20 @@ class ChatClient:
         self._send_lock = threading.Lock()
         self._closed = threading.Event()
         self._receiver: threading.Thread | None = None
+        # 界面层钩子：设置 on_message 后由界面自行渲染，不再往终端打印；
+        # echo=False 时本地回显也交给界面，避免同一句话出现两次。
+        self.on_message: Callable[[Message], None] | None = None
+        self.on_disconnect: Callable[[str], None] | None = None
+        self.echo = True
 
     @property
     def closed(self) -> bool:
         return self._closed.is_set()
+
+    @property
+    def connected(self) -> bool:
+        """是否仍持有可用连接（连接成功且未被关闭）。"""
+        return self._sock is not None and not self._closed.is_set()
 
     def connect(self) -> str:
         """建立连接并完成 hello/welcome 握手，返回服务器分配的昵称。"""
@@ -107,6 +118,7 @@ class ChatClient:
         sock = self._sock
         if sock is None:
             return
+        reason = "连接已关闭"
         try:
             while not self._closed.is_set():
                 message = read_message(sock)
@@ -114,15 +126,28 @@ class ChatClient:
                     self._send(Message(type="pong", sender=self.name))
                     continue
                 line = format_incoming(message)
-                if line is not None:
+                if line is None:
+                    continue
+                if self.on_message is not None:
+                    self.on_message(message)
+                else:
                     print(line, flush=True)
         except (ConnectionClosed, OSError) as exc:
             if not self._closed.is_set():
-                print(f"\n! 与服务器的连接已断开: {exc}", file=sys.stderr, flush=True)
+                reason = f"与服务器的连接已断开: {exc}"
+                self._report_disconnect(reason)
         except ProtocolError as exc:
-            print(f"\n! 协议错误: {exc}", file=sys.stderr, flush=True)
+            reason = f"协议错误: {exc}"
+            self._report_disconnect(reason)
         finally:
             self._closed.set()
+            if self.on_disconnect is not None:
+                self.on_disconnect(reason)
+
+    def _report_disconnect(self, text: str) -> None:
+        """没有界面钩子时按终端习惯把断线原因写到 stderr。"""
+        if self.on_disconnect is None:
+            print(f"\n! {text}", file=sys.stderr, flush=True)
 
     def _send(self, message: Message) -> None:
         sock = self._sock
@@ -145,7 +170,8 @@ class ChatClient:
             return
         self._send(Message(type="chat", sender=self.name, text=body))
         stamp = time.strftime("%H:%M:%S")
-        print(f"[{stamp}] {self.name}: {body}", flush=True)
+        if self.echo:
+            print(f"[{stamp}] {self.name}: {body}", flush=True)
 
     def send_private(self, target: str, text: str) -> None:
         body = text.strip()
@@ -157,7 +183,12 @@ class ChatClient:
             return
         self._send(Message(type="private", sender=self.name, target=target, text=body))
         stamp = time.strftime("%H:%M:%S")
-        print(f"[{stamp}] 我 → {target}: {body}", flush=True)
+        if self.echo:
+            print(f"[{stamp}] 我 → {target}: {body}", flush=True)
+
+    def request_users(self) -> None:
+        """向服务器请求在线用户列表（界面上的“刷新在线列表”按钮）。"""
+        self._send(Message(type="who", sender=self.name))
 
     def handle_line(self, line: str) -> bool:
         """处理一行输入；返回 ``False`` 表示应退出。"""

@@ -11,6 +11,7 @@ import logging
 import socket
 import sys
 import threading
+import time
 
 from .config import MAX_TEXT_LENGTH, ServerConfig, sanitize_name
 from .protocol import (
@@ -28,7 +29,7 @@ LOGGER = logging.getLogger("task1.server")
 class ClientSession:
     """一个已接入的客户端连接及其发送锁（多线程写同一 socket 必须串行化）。"""
 
-    __slots__ = ("sock", "addr", "name", "send_lock", "closed")
+    __slots__ = ("sock", "addr", "name", "send_lock", "closed", "since")
 
     def __init__(self, sock: socket.socket, addr: tuple[str, int]) -> None:
         self.sock = sock
@@ -36,6 +37,7 @@ class ClientSession:
         self.name = ""
         self.send_lock = threading.Lock()
         self.closed = False
+        self.since = time.monotonic()
 
     def send(self, message: Message) -> bool:
         """发送一条消息；返回 ``False`` 表示连接已不可用。"""
@@ -71,6 +73,62 @@ class ChatServer:
             return None
         host, port = self._listener.getsockname()[:2]
         return str(host), int(port)
+
+    @property
+    def user_count(self) -> int:
+        """当前在线人数。"""
+        with self._lock:
+            return len(self._sessions)
+
+    def online_users(self) -> list[dict[str, object]]:
+        """返回在线客户端快照（昵称、地址、已连接秒数），供管理界面展示。
+
+        只暴露展示用字段，不把 ``socket`` 交给界面层，避免界面误操作连接。
+        """
+        with self._lock:
+            sessions = list(self._sessions.values())
+        now = time.monotonic()
+        return [
+            {
+                "name": session.name,
+                "addr": f"{session.addr[0]}:{session.addr[1]}",
+                "connected_seconds": int(now - session.since),
+            }
+            for session in sorted(sessions, key=lambda item: item.name)
+        ]
+
+    def broadcast_system(self, text: str) -> int:
+        """向所有在线客户端发一条系统公告，返回成功送达的人数。"""
+        body = text.strip()
+        if not body:
+            return 0
+        LOGGER.info("[公告] %s", body[:80])
+        message = Message(type="system", sender="server", text=body, data={"event": "notice"})
+        with self._lock:
+            targets = list(self._sessions.values())
+        return sum(1 for session in targets if session.send(message))
+
+    def kick(self, name: str) -> bool:
+        """把指定昵称的客户端请出聊天室；返回是否找到该客户端。
+
+        由该客户端的会话线程在读到 EOF 后完成 ``_unregister``，因此这里只关连接。
+        """
+        with self._lock:
+            session = self._sessions.get(name)
+        if session is None:
+            return False
+        session.send(Message(type="error", sender="server", text="你已被服务器管理员请出聊天室"))
+        session.closed = True
+        try:
+            session.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            session.sock.close()
+        except OSError:
+            pass
+        LOGGER.info("[踢出] %s（%s）", name, session.addr[0])
+        return True
 
     def start(self) -> tuple[str, int]:
         """创建监听 socket 并启动 accept 线程，返回实际绑定的 ``(host, port)``。"""

@@ -222,6 +222,47 @@ class RobustnessTests(ChatServerTestCase):
                 read_message(alice)
 
 
+class AdminTests(ChatServerTestCase):
+    """服务器监控台用到的最小管理接口：在线快照、公告、踢出。"""
+
+    def test_online_users_snapshot(self) -> None:
+        self.connect("bob")
+        self.connect("alice")
+        users = self.server.online_users()
+        self.assertEqual([user["name"] for user in users], ["alice", "bob"])
+        self.assertTrue(str(users[0]["addr"]).startswith("127.0.0.1:"))
+        self.assertGreaterEqual(int(users[0]["connected_seconds"]), 0)
+        self.assertEqual(self.server.user_count, 2)
+
+    def test_broadcast_system_reaches_every_client(self) -> None:
+        alice, _ = self.connect("alice")
+        bob, _ = self.connect("bob")
+        self.read_until(alice, "system")  # 先消化“bob 加入”的通知
+        delivered = self.server.broadcast_system("今晚 22:00 系统维护")
+        self.assertEqual(delivered, 2)
+        for sock in (alice, bob):
+            message = self.read_until(sock, "system")
+            self.assertEqual(message.text, "今晚 22:00 系统维护")
+            self.assertEqual(message.data["event"], "notice")
+
+    def test_broadcast_blank_text_is_noop(self) -> None:
+        alice, _ = self.connect("alice")
+        self.assertEqual(self.server.broadcast_system("   "), 0)
+        self.assert_quiet(alice)
+
+    def test_kick_closes_target_and_notifies_others(self) -> None:
+        alice, _ = self.connect("alice")
+        bob, _ = self.connect("bob")
+        self.read_until(alice, "system")  # bob 加入
+        self.assertTrue(self.server.kick("bob"))
+        leave = self.read_until(alice, "system")
+        self.assertEqual(leave.data["event"], "leave")
+        with self.assertRaises((ConnectionClosed, OSError)):
+            for _ in range(3):  # 先读出“被请出”的 error，再期待 EOF
+                read_message(bob)
+        self.assertFalse(self.server.kick("nobody"))
+
+
 class ClientTests(ChatServerTestCase):
     def test_scripted_client_receives_userlist(self) -> None:
         config = ClientConfig(host=self.host, port=self.port, name="carol", linger=0.5)
@@ -232,6 +273,27 @@ class ClientTests(ChatServerTestCase):
         output = buffer.getvalue()
         self.assertIn("在线用户", output)
         self.assertIn("carol", output)
+
+    def test_client_callback_renders_instead_of_printing(self) -> None:
+        received: list[Message] = []
+        client = ChatClient(ClientConfig(host=self.host, port=self.port, name="carol", linger=0.5))
+        client.on_message = received.append
+        client.echo = False
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            client.connect()
+            client.start_receiver()
+            alice, _ = self.connect("alice")
+            send_message(alice, Message(type="chat", sender="alice", text="hi carol"))
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not any(m.type == "chat" for m in received):
+                time.sleep(0.05)
+            client.quit()
+        self.assertTrue(
+            any(m.type == "chat" and m.text == "hi carol" for m in received),
+            f"回调没有收到聊天消息，实际: {[m.type for m in received]}",
+        )
+        self.assertNotIn("hi carol", buffer.getvalue(), "设置回调后不应再往终端打印")
 
     def test_client_reports_connection_failure(self) -> None:
         config = ClientConfig(host="127.0.0.1", port=1, name="carol", connect_timeout=0.2, reconnect_attempts=1)
