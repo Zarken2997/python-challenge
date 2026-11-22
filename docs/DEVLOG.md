@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 03:12 · T1 · PyCharm 直接运行 + 聊天室端口自动分配
+- 目标: 用户要求「把程序启动改为 PyCharm 里运行就可以」，并让服务器创建聊天室时自动分配端口、把实际端口显示出来，客户端能直接用
+- 改动: `src/task1_socket_chat/server.py`/`client.py`/`udp_chat.py`/`gui_server.py`/`gui_client.py`(各加入口自举：`__package__` 为空时补 `sys.path` 与包名，绿色三角与 `python -m` 都可用)、`src/task1_socket_chat/gui_server.py`(新增 `display_address`、地址栏与「复制地址」、`start_server()` 返回真实端口、`--port` 默认 0)、`src/task1_socket_chat/server.py`(`--port` 默认 0)、`src/task1_socket_chat/gui_client.py`(新增 `parse_address`，服务器输入框可直接粘贴 `IP:端口`)、`tests/test_gui.py`(新增 `AddressTests` 5 项，服务器窗口测试改用端口 0)、`src/task1_socket_chat/README.md`(补自动端口流程与 4.5.1 PyCharm 运行)、`AGENTS.md`(§9.1 允许端口 0 并要求显示实际端口)
+- 验证: `py -m compileall -q src tests` → exit 0；`py -m unittest discover -s tests` → `Ran 74 tests in 4.816s` `OK`（退出码 0）；`py src/task1_socket_chat/gui_server.py` 直接运行 → 枚举窗口得到 `任务1 · 聊天服务器监控台`；截图脚本 `logs/_shot_server.py`（端口 0）→ `实际端口: 61523`，窗口第二行显示红色 `127.0.0.1:61523`，在线表 alice/bob 与队列地址正常；`logs/_shot_client.py` 用「粘贴 127.0.0.1:端口」连接成功，聊天区出现群聊与私聊
+- 决策: 用入口自举而非把包改成扁平结构，因为 `python -m` 与 PyCharm 脚本运行要同时成立，扁平化会破坏相对导入的清晰度；客户端让用户粘贴 `IP:端口` 而不是只显示端口，因为自动端口每次不同，抄错一位就连不上
+- 问题: 首轮截图发现加宽输入框后工具栏被挤出窗口（「断开」与「已连接」被截断）→ 主机框 18→16、昵称框 12→10，提示文字移到下方；`treeview.cget("state")` 返回 Tcl index 而非字符串 → 测试改用 `instate(["!disabled"])`
+- 下一步: 报告与正式截图仍暂缓（用户已说明）；可考虑统一 `chat.py --protocol tcp|udp` 入口
+
 ## 2026-11-23 02:48 · T1 · GUI 启动时把窗口提到最前
 - 目标: 用户从终端敲 `python -m src.task1_socket_chat.gui_server` 后「光标卡住、不弹窗」，排查并避免窗口被终端压住造成的「没反应」错觉
 - 改动: `src/task1_socket_chat/gui_server.py`(新增 `bring_to_front` 并在 main 调用)、`src/task1_socket_chat/gui_client.py`(同上)

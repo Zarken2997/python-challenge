@@ -85,18 +85,20 @@ UDP 版使用同一个 `Message` 编码为 UTF-8 JSON 放进单个数据报（`M
 
 ### 4.1 TCP 聊天室（两个终端）
 
-终端 A（先启动服务端）：
+终端 A（先启动服务端，`--port 0` 表示让系统挑一个空闲端口）：
 
 ```bash
-python -m src.task1_socket_chat.server --port 9000
-# 聊天服务器已启动 → 127.0.0.1:9000
+python -m src.task1_socket_chat.server --port 0
+# 聊天服务器已启动 → 127.0.0.1:61523   ← 实际端口以这行输出为准
 ```
 
-终端 B、C（各启动一个客户端）：
+端口也可以写死（如 `--port 9000`），但自动分配能避免「9000 被别的程序占用」这类课堂常见问题。
+
+终端 B、C（各启动一个客户端，端口填上面打印的那个）：
 
 ```bash
-python -m src.task1_socket_chat.client --port 9000 --name alice
-python -m src.task1_socket_chat.client --port 9000 --name bob
+python -m src.task1_socket_chat.client --port 61523 --name alice
+python -m src.task1_socket_chat.client --port 61523 --name bob
 ```
 
 客户端命令：
@@ -140,13 +142,19 @@ UDP 版没有 `accept()`：中继收到数据报后按源地址回送/转发，�
 服务器端与客户端是两个独立窗口，各自启动：
 
 ```bash
-# 窗口 1：服务器监控台（先启动，自动监听，也可在界面里改地址/端口后点「启动服务」）
-python -m src.task1_socket_chat.gui_server --port 9000
+# 窗口 1：服务器监控台（端口默认 0 = 自动分配；点「创建聊天室」即可）
+python -m src.task1_socket_chat.gui_server
 
-# 窗口 2、3：客户端（每个窗口填服务器地址/端口/昵称，点「连接」）
-python -m src.task1_socket_chat.gui_client --port 9000 --name alice
-python -m src.task1_socket_chat.gui_client --port 9000 --name bob
+# 窗口 2、3：客户端（服务器地址可直接粘贴服务器窗口显示的 IP:端口）
+python -m src.task1_socket_chat.gui_client --name alice
+python -m src.task1_socket_chat.gui_client --name bob
 ```
+
+端口自动分配的流程：
+
+1. 服务器窗口里「端口（0 = 自动）」保持 0，点 **创建聊天室**；
+2. 窗口第二行出现红色地址，例如 **`127.0.0.1:61523`**，旁边有「复制地址」按钮；
+3. 客户端窗口把这段地址直接粘贴到「服务器」输入框（会自动拆成主机 + 端口），点「连接」。
 
 服务器监控台能做什么：
 
@@ -166,6 +174,24 @@ python -m src.task1_socket_chat.gui_client --port 9000 --name bob
 GUI 只是 `ChatServer` / `ChatClient` 的一层壳：网络与协议逻辑与命令行版完全共用，
 所以两者的消息格式、心跳、踢人、公告行为一致。
 
+### 4.5.1 在 PyCharm 里直接运行
+
+每个入口文件顶部都有一段自举代码：被当作脚本直接运行时，它把仓库根目录加入
+`sys.path` 并补上包名，所以下面两种方式等价，**都不需要先配 Run Configuration 的 Module name**：
+
+- 在 PyCharm 里右键 `src/task1_socket_chat/gui_server.py` → **Run 'gui_server'**（绿色三角）；
+- 或在终端执行 `python src/task1_socket_chat/gui_server.py`。
+
+注意：
+
+- 解释器选 **3.14** 那个（`py -0p` 里的 `pythoncore-3.14-64`）；不要用 `Anaconda3` 的 3.7，
+  它不支持 `dataclass(slots=True)`，会直接报错。
+- `python` 如果指向 Windows 的 `WindowsApps\python.exe`（Microsoft Store 占位符），
+  双击运行会「什么都没发生」；改用 `py` 启动器，或在「设置 → 应用 → 高级应用设置 → 应用执行别名」
+  里关掉它，并把真实解释器目录加入 PATH。
+- PyCharm 的 Run Configuration 里不要勾 "Run with Python Console"，否则会停在 `>>>`，
+  看起来同样像「没反应」。
+
 ### 4.6 局域网实测
 
 把服务端 `/ 中继` 的 `--host` 改为 `0.0.0.0`，客户端 `--host` 改为服务器局域网 IP，
@@ -183,7 +209,7 @@ python -m compileall -q src tests
 python -m unittest discover -s tests -v
 ```
 
-当前结果：`Ran 69 tests ... OK`，分布在 `test_protocol.py`、`test_chat_server.py`（含管理接口与
+当前结果：`Ran 74 tests ... OK`，分布在 `test_protocol.py`、`test_chat_server.py`（含管理接口与
 客户端回调）、`test_udp_chat.py`、`test_gui.py`（无显示环境自动跳过）、`test_devlog.py`；
 全部用回环 socket，端口由系统分配，不依赖外部网络。
 
@@ -201,6 +227,11 @@ python -m unittest discover -s tests -v
   `on_disconnect` 回调、给 `ChatServer` 加 `online_users()` / `kick()` / `broadcast_system()`，
   避免两套实现行为漂移；服务器「终端监控」用 `logging.Handler` + 队列把日志搬到 Tk 主线程，
   不在工作线程里碰控件。
+- **端口自动分配**：`--port` 默认 0，由系统在 `bind()` 时挑一个空闲端口并回填显示，
+  避免课堂演示时端口被占；代价是客户端必须从服务器窗口/终端输出里抄实际端口，
+  所以服务器端把地址做成醒目红色文本并提供「复制地址」按钮。
+- **入口自举而非改包结构**：在入口模块顶部判断 `__package__`，为空时补 `sys.path` 与包名，
+  这样 PyCharm 绿色三角与 `python -m` 都能用，又不用为启动脚本复制一套逻辑。
 
 ## 7. 已知限制
 

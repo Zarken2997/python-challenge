@@ -14,6 +14,16 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+if __package__ in (None, ""):
+    # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
+    # 这里把仓库根目录加入 sys.path 并补上包名，`python -m ...` 与直接运行都可用。
+    from pathlib import Path
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    __package__ = "src.task1_socket_chat"
+
 from .client import ChatClient
 from .config import DEFAULT_HOST, DEFAULT_PORT, MAX_TEXT_LENGTH, ClientConfig
 from .protocol import Message, ProtocolError
@@ -51,13 +61,13 @@ class ClientApp:
         toolbar = ttk.Frame(self.root, padding=(10, 8))
         toolbar.pack(side=tk.TOP, fill=tk.X)
         ttk.Label(toolbar, text="服务器").pack(side=tk.LEFT)
-        self.host_entry = ttk.Entry(toolbar, textvariable=self.host_var, width=14)
+        self.host_entry = ttk.Entry(toolbar, textvariable=self.host_var, width=16)
         self.host_entry.pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(toolbar, text="端口").pack(side=tk.LEFT)
         self.port_entry = ttk.Entry(toolbar, textvariable=self.port_var, width=7)
         self.port_entry.pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(toolbar, text="昵称").pack(side=tk.LEFT)
-        self.name_entry = ttk.Entry(toolbar, textvariable=self.name_var, width=12)
+        self.name_entry = ttk.Entry(toolbar, textvariable=self.name_var, width=10)
         self.name_entry.pack(side=tk.LEFT, padx=(4, 12))
         self.connect_button = ttk.Button(toolbar, text="连接", command=self.connect)
         self.connect_button.pack(side=tk.LEFT)
@@ -80,7 +90,7 @@ class ClientApp:
 
         ttk.Label(
             self.root,
-            text="提示：在右侧选中一位用户即可私聊；不选则群聊。回车发送。",
+            text="提示：服务器地址可粘贴「IP:端口」；右侧选中一位用户即可私聊，不选则群聊；回车发送。",
             foreground="#777",
             padding=(10, 0, 10, 6),
         ).pack(side=tk.BOTTOM, fill=tk.X)
@@ -134,15 +144,21 @@ class ClientApp:
     def connect(self) -> None:
         if self.client is not None:
             return
-        try:
-            port = int(self.port_var.get())
-        except ValueError:
-            messagebox.showerror("端口无效", "端口必须是 1–65535 之间的整数")
-            return
+        host_from_text, port_from_text = parse_address(self.host_var.get())
+        if port_from_text is not None:
+            port = port_from_text
+            self.port_var.set(str(port))
+        else:
+            try:
+                port = int(self.port_var.get())
+            except ValueError:
+                messagebox.showerror("端口无效", "端口必须是 1–65535 之间的整数")
+                return
         if not 1 <= port <= 65535:
             messagebox.showerror("端口无效", "端口必须是 1–65535 之间的整数")
             return
-        self.host = self.host_var.get().strip() or DEFAULT_HOST
+        self.host = host_from_text or DEFAULT_HOST
+        self.host_var.set(self.host)
         self.port = port
         name = self.name_var.get().strip() or "guest"
         self.nickname = name
@@ -315,6 +331,23 @@ class ClientApp:
         if client is not None:
             client.quit()
         self.root.destroy()
+
+
+def parse_address(text: str) -> tuple[str | None, int | None]:
+    """解析服务器地址，支持 `127.0.0.1:54321`、只填端口 `54321` 或只填主机。
+
+    返回 `(host, port)`，未提供的部分为 None；这样用户可以把服务器窗口里
+    「复制地址」得到的 `IP:端口` 直接粘贴进「服务器」输入框。
+    """
+    text = text.strip()
+    if not text:
+        return None, None
+    if text.isdigit():
+        return None, int(text)
+    host, sep, port_text = text.partition(":")
+    if sep and port_text.isdigit():
+        return host or None, int(port_text)
+    return text, None
 
 
 def build_parser() -> argparse.ArgumentParser:

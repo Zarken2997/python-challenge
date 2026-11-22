@@ -11,12 +11,23 @@ from __future__ import annotations
 import argparse
 import logging
 import queue
+import socket
 import sys
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .config import DEFAULT_PORT, ServerConfig
+if __package__ in (None, ""):
+    # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
+    # 这里把仓库根目录加入 sys.path 并补上包名，`python -m ...` 与直接运行都可用。
+    from pathlib import Path
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    __package__ = "src.task1_socket_chat"
+
+from .config import ServerConfig
 from .server import ChatServer
 
 LOGGER = logging.getLogger("task1.server")
@@ -55,12 +66,28 @@ def format_duration(seconds: int) -> str:
     return f"{secs:02d}s"
 
 
+def display_address(host: str, port: int) -> str:
+    """把绑定地址转成可以直接填到客户端里的「IP:端口」。
+
+    监听 0.0.0.0 时用户没法直接输入 *，换成这台机器的局域网 IP 并提示。
+    """
+    if host in ("0.0.0.0", ""):
+        try:
+            lan_ip = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return f"<本机局域网IP>:{port}（监听 0.0.0.0）"
+        return f"{lan_ip}:{port}（监听 0.0.0.0，局域网可连）"
+    return f"{host}:{port}"
+
+
 class ServerApp:
     """服务器监控台窗口。"""
 
     def __init__(self, root: tk.Tk, host: str, port: int) -> None:
         self.root = root
         self.server: ChatServer | None = None
+        self._connect_address = ""
+        self._bound_port: int | None = None
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.handler = QueueLogHandler(self.log_queue)
         self.handler.setLevel(logging.INFO)
@@ -72,6 +99,7 @@ class ServerApp:
         self.host_var = tk.StringVar(value=host)
         self.port_var = tk.StringVar(value=str(port))
         self.status_var = tk.StringVar(value="未启动")
+        self.address_var = tk.StringVar(value="（启动后自动分配并显示端口）")
         self.auto_scroll = tk.BooleanVar(value=True)
 
         self._build_ui()
@@ -89,13 +117,28 @@ class ServerApp:
         toolbar.pack(side=tk.TOP, fill=tk.X)
         ttk.Label(toolbar, text="监听地址").pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.host_var, width=14).pack(side=tk.LEFT, padx=(4, 12))
-        ttk.Label(toolbar, text="端口").pack(side=tk.LEFT)
+        ttk.Label(toolbar, text="端口（0 = 自动）").pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.port_var, width=7).pack(side=tk.LEFT, padx=(4, 12))
-        self.start_button = ttk.Button(toolbar, text="启动服务", command=self.start_server)
+        self.start_button = ttk.Button(toolbar, text="创建聊天室", command=self.start_server)
         self.start_button.pack(side=tk.LEFT)
         self.stop_button = ttk.Button(toolbar, text="停止服务", command=self.stop_server, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(toolbar, textvariable=self.status_var, foreground="#0a7d32").pack(side=tk.LEFT, padx=(16, 0))
+
+        address_bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
+        address_bar.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(address_bar, text="聊天室地址：").pack(side=tk.LEFT)
+        self.address_label = ttk.Label(
+            address_bar,
+            textvariable=self.address_var,
+            foreground="#c62828",
+            font=("Consolas", 12, "bold"),
+        )
+        self.address_label.pack(side=tk.LEFT)
+        self.copy_button = ttk.Button(
+            address_bar, text="复制地址", command=self.copy_address, state=tk.DISABLED
+        )
+        self.copy_button.pack(side=tk.LEFT, padx=(10, 0))
 
         # 先占住底部的状态栏，再让中间面板吃掉剩余空间，否则底部会被挤出窗口
         status_bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
@@ -159,30 +202,37 @@ class ServerApp:
 
     # ---------------------------------------------------------------- 操作
 
-    def start_server(self) -> None:
+    def start_server(self) -> int | None:
+        """创建聊天室并开始监听，返回实际端口；端口填 0 表示由系统自动分配。"""
         if self.server is not None:
-            return
+            return self._bound_port
         host = self.host_var.get().strip() or "127.0.0.1"
         try:
             port = int(self.port_var.get())
         except ValueError:
-            messagebox.showerror("端口无效", "端口必须是 1–65535 之间的整数")
-            return
-        if not 1 <= port <= 65535:
-            messagebox.showerror("端口无效", "端口必须是 1–65535 之间的整数")
-            return
+            messagebox.showerror("端口无效", "端口必须是 0–65535 之间的整数（0 表示自动分配）")
+            return None
+        if not 0 <= port <= 65535:
+            messagebox.showerror("端口无效", "端口必须是 0–65535 之间的整数（0 表示自动分配）")
+            return None
         server = ChatServer(ServerConfig(host=host, port=port))
         try:
             bound_host, bound_port = server.start()
         except OSError as exc:
             self._append(f"! 启动失败: {exc}", "error")
             messagebox.showerror("启动失败", f"无法监听 {host}:{port}\n{exc}")
-            return
+            return None
         self.server = server
+        self._bound_port = bound_port
+        auto_note = "（端口由系统自动分配）" if port == 0 else ""
         self.status_var.set(f"监听 {bound_host}:{bound_port}")
+        self._connect_address = f"{bound_host}:{bound_port}"
+        self.address_var.set(display_address(bound_host, bound_port))
+        self.copy_button.config(state=tk.NORMAL)
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
-        self._append(f"* 聊天服务器已启动 → {bound_host}:{bound_port}", "notice")
+        self._append(f"* 聊天室已创建 → {self._connect_address}{auto_note}", "notice")
+        return bound_port
 
     def stop_server(self) -> None:
         server, self.server = self.server, None
@@ -190,9 +240,21 @@ class ServerApp:
             server.shutdown()
             self._append("* 服务器已停止，所有客户端连接已关闭", "notice")
         self.status_var.set("未启动")
+        self.address_var.set("（启动后自动分配并显示端口）")
+        self._connect_address = ""
+        self._bound_port = None
+        self.copy_button.config(state=tk.DISABLED)
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self._refresh_users_now()
+
+    def copy_address(self) -> None:
+        """把「IP:端口」复制到剪贴板，便于粘贴给客户端窗口。"""
+        if not self._connect_address:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self._connect_address)
+        self._append(f"* 已复制聊天室地址 {self._connect_address}", "notice")
 
     def broadcast(self) -> None:
         if self.server is None:
@@ -297,7 +359,12 @@ class ServerApp:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="任务1 聊天服务器图形监控台")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，局域网演示用 0.0.0.0")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口（默认 9000）")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="监听端口；默认 0 表示由系统自动分配一个空闲端口（创建后窗口里会显示实际端口）",
+    )
     return parser
 
 

@@ -13,6 +13,16 @@ import sys
 import threading
 import time
 
+if __package__ in (None, ""):
+    # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
+    # 这里把仓库根目录加入 sys.path 并补上包名，`python -m ...` 与直接运行都可用。
+    from pathlib import Path
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    __package__ = "src.task1_socket_chat"
+
 from .config import MAX_TEXT_LENGTH, ServerConfig, sanitize_name
 from .protocol import (
     PROTOCOL_VERSION,
@@ -397,7 +407,12 @@ class ChatServer:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="任务1 TCP 聊天服务器（多客户端广播）")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，局域网演示用 0.0.0.0")
-    parser.add_argument("--port", type=int, default=9000, help="监听端口（默认 9000）")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="监听端口；默认 0 表示由系统自动分配空闲端口（启动后会打印实际端口）",
+    )
     parser.add_argument("--backlog", type=int, default=16, help="listen 队列长度")
     parser.add_argument("--max-clients", type=int, default=50, help="最大同时在线人数")
     parser.add_argument("--ping-interval", type=float, default=30.0, help="空闲多少秒后发送心跳")

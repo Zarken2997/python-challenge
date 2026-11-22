@@ -14,6 +14,16 @@ import threading
 import time
 from collections.abc import Callable
 
+if __package__ in (None, ""):
+    # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
+    # 这里把仓库根目录加入 sys.path 并补上包名，`python -m ...` 与直接运行都可用。
+    from pathlib import Path
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    __package__ = "src.task1_socket_chat"
+
 from .config import MAX_TEXT_LENGTH, ClientConfig, sanitize_name
 from .protocol import ConnectionClosed, Message, ProtocolError, read_message, send_message
 
