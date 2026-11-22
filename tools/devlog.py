@@ -107,12 +107,12 @@ def parse_entries(lines: list[str]) -> list[dict]:
 
 def pending_required_fields(entry: dict) -> list[str]:
     """返回该条目中仍为占位符（空、TODO、TBD…）的必填字段名。"""
-    return [
-        key
-        for key in REQUIRED
-        if (value := entry["fields"].get(key, "")) in PLACEHOLDERS
-        or value.upper().startswith(PLACEHOLDER_PREFIXES)
-    ]
+    pending: list[str] = []
+    for key in REQUIRED:
+        value = entry["fields"].get(key, "")
+        if value in PLACEHOLDERS or value.upper().startswith(PLACEHOLDER_PREFIXES):
+            pending.append(key)
+    return pending
 
 
 def format_entry(stamp: datetime, task: str, title: str) -> str:

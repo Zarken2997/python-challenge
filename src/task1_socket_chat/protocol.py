@@ -12,15 +12,15 @@ import socket
 import struct
 import time
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any
 
-PROTOCOL_VERSION: Final = 1
+PROTOCOL_VERSION = 1
 """协议版本，双方需一致；升级不兼容改动时加 1。"""
 
-MAX_PAYLOAD: Final = 64 * 1024
+MAX_PAYLOAD = 64 * 1024
 """单帧正文上限（64 KiB），超过视为非法帧，防止恶意长度撑爆内存。"""
 
-HEADER: Final = struct.Struct("!I")
+HEADER = struct.Struct("!I")
 """帧头：网络字节序（大端）的 4 字节无符号整数。"""
 
 
@@ -37,7 +37,7 @@ def _require(condition: bool, message: str) -> None:
         raise ProtocolError(message)
 
 
-@dataclass(slots=True)
+@dataclass
 class Message:
     """一条聊天消息。
 

@@ -22,7 +22,7 @@ def sanitize_name(name: str) -> str:
     return cleaned or "guest"
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class ServerConfig:
     """服务器参数。端口 0 表示由系统分配（测试常用）。"""
 
@@ -47,7 +47,7 @@ class ServerConfig:
             raise ValueError(f"max_missed_pings 必须 >= 1: {self.max_missed_pings}")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class UdpRelayConfig:
     """UDP 中继参数；UDP 无连接，用 TTL 清理长时间不发言的节点。"""
 
@@ -65,7 +65,7 @@ class UdpRelayConfig:
             raise ValueError(f"max_peers 必须 >= 1: {self.max_peers}")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class ClientConfig:
     """客户端参数。"""
 

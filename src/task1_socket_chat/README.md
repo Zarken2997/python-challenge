@@ -184,8 +184,11 @@ GUI 只是 `ChatServer` / `ChatClient` 的一层壳：网络与协议逻辑与�
 
 注意：
 
-- 解释器选 **3.14** 那个（`py -0p` 里的 `pythoncore-3.14-64`）；不要用 `Anaconda3` 的 3.7，
-  它不支持 `dataclass(slots=True)`，会直接报错。
+- **解释器版本**：代码兼容 **Python 3.7 及以上**（已用 Anaconda 3.7.0 跑通全部 74 项测试），
+  PyCharm 里选哪个都行；推荐 `py -0p` 里的 `pythoncore-3.14-64`，Anaconda3 的 3.7 也能跑。
+  兼容性靠两点保证：每个模块开头都有 `from __future__ import annotations`（3.7 不会求值
+  `list[str]`、`str | None` 这类注解），且没有使用 `dataclass(slots=True)`、`typing.Final`、
+  赋值表达式 `:=` 等 3.8+ 才有的语法。
 - `python` 如果指向 Windows 的 `WindowsApps\python.exe`（Microsoft Store 占位符），
   双击运行会「什么都没发生」；改用 `py` 启动器，或在「设置 → 应用 → 高级应用设置 → 应用执行别名」
   里关掉它，并把真实解释器目录加入 PATH。

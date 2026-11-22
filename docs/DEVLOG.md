@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 03:26 · T1 · 兼容 Python 3.7（Anaconda），放弃折腾解释器配置
+- 目标: 用户说「改不了就不改了，你把代码替换成其他版本能兼容的语句就行」——不再修改 PyCharm 解释器配置，改为让代码本身能在 Anaconda 3.7.0 上运行
+- 改动: `src/task1_socket_chat/protocol.py`(去掉 `from typing import Final` 及 3 处 `: Final`；`@dataclass` 去掉 `slots=True`)、`src/task1_socket_chat/config.py`(3 处 `@dataclass(slots=True, frozen=True)` → `@dataclass(frozen=True)`)、`tools/devlog.py`(`pending_required_fields` 里的赋值表达式 `:=` 改成普通循环)、`src/task1_socket_chat/README.md`(§4.5.1 改为「3.7+ 均可」并说明兼容手段)、`AGENTS.md`(§4.1 Python 版本要求改为 3.7+，列出禁用语法)
+- 验证: `C:\Users\Lenovo\Anaconda3\python.exe -m compileall -q src tests tools` → exit 0；`Anaconda3\python.exe -m unittest discover -s tests` → `Ran 74 tests in 4.985s` `OK`（exit 0）；`AppData\Local\Python\pythoncore-3.14-64\python.exe -m unittest discover -s tests` → `Ran 74 tests in 4.868s` `OK`（exit 0）；`Anaconda3\python.exe src\task1_socket_chat\gui_server.py --port 0` 启动 5 秒后窗口标题为 `任务1 · 聊天服务器监控台`
+- 决策: 用 `from __future__ import annotations` + 去掉 3.8+ 语法来兼容 3.7，而不是加 `typing_extensions` 依赖或写两套代码——注解不影响运行，改动面最小；把 `.idea` 配置恢复原样（Anaconda 3.7），因为代码已能在 3.7 跑，不必再动用户的 IDE 设置
+- 问题: 3.7 不支持 `dataclass(slots=True)`、`typing.Final`、`:=`，正是这三个导致 `ImportError: cannot import name 'Final'` 与 `SyntaxError`；此前尝试改 PyCharm 项目 SDK 反而触发 `.port`/`.lock` 单实例锁冲突（`AccessDeniedException`），遂按用户要求回退
+- 下一步: 在 PyCharm 里直接用绿色三角运行 `gui_server.py`；若任务 2/3 用到新语法，按 AGENTS.md §4.1 的禁用清单一并遵守
+
 ## 2026-11-23 03:12 · T1 · PyCharm 直接运行 + 聊天室端口自动分配
 - 目标: 用户要求「把程序启动改为 PyCharm 里运行就可以」，并让服务器创建聊天室时自动分配端口、把实际端口显示出来，客户端能直接用
 - 改动: `src/task1_socket_chat/server.py`/`client.py`/`udp_chat.py`/`gui_server.py`/`gui_client.py`(各加入口自举：`__package__` 为空时补 `sys.path` 与包名，绿色三角与 `python -m` 都可用)、`src/task1_socket_chat/gui_server.py`(新增 `display_address`、地址栏与「复制地址」、`start_server()` 返回真实端口、`--port` 默认 0)、`src/task1_socket_chat/server.py`(`--port` 默认 0)、`src/task1_socket_chat/gui_client.py`(新增 `parse_address`，服务器输入框可直接粘贴 `IP:端口`)、`tests/test_gui.py`(新增 `AddressTests` 5 项，服务器窗口测试改用端口 0)、`src/task1_socket_chat/README.md`(补自动端口流程与 4.5.1 PyCharm 运行)、`AGENTS.md`(§9.1 允许端口 0 并要求显示实际端口)

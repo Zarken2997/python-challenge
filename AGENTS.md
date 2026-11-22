@@ -66,7 +66,10 @@ python-challenge/
 ### 4.1 必须做到
 
 - 改代码前先读相关文件与题目原文；需求有歧义先问，不猜。
-- Python ≥ 3.10（当前环境 3.12），所有源码 UTF-8 保存，脚本可用 `python -m` 直接运行。
+- 兼容 **Python 3.7+**（用户环境里有 Anaconda 3.7.0，也有 3.14）：每个模块开头保留
+  `from __future__ import annotations`，禁止使用 `dataclass(slots=True)`、`typing.Final`、
+  赋值表达式 `:=`、`str.removeprefix/removesuffix`、`dict1 | dict2` 等 3.8+ 语法；
+  所有源码 UTF-8 保存，脚本可用 `python -m` 直接运行。
 - 公共函数/类写类型注解与 docstring（中文可，标识符用英文）；入口使用 `if __name__ == "__main__":`。
 - 每完成一个可验证单元，就运行对应命令或测试，并把**原始命令 + 关键输出**写进开发日志。
 - 数据库访问一律参数化 SQL；网络程序必须能优雅退出（Ctrl+C 不吐异常栈）。
