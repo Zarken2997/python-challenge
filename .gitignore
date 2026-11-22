@@ -1,0 +1,123 @@
+# ==========================================================
+# .gitignore — Python 挑战课题
+# 原则：可再生成的产物、环境相关文件、私有数据一律不入库；
+#      源码、题目 docx、报告、开发日志必须入库。
+# ==========================================================
+
+# ---------- Python 字节码与缓存 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+*.egg-info/
+.eggs/
+
+# ---------- 构建 / 打包 ----------
+build/
+dist/
+wheels/
+sdist/
+pip-wheel-metadata/
+MANIFEST
+
+# ---------- 测试与静态检查缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ---------- 编辑器 / IDE ----------
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# ---------- 操作系统 ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ---------- Office / WPS 临时与锁文件 ----------
+# Word 打开文档时生成的 ~$xxx.docx 锁文件（含题目的锁文件）绝不入库
+~$*
+*.~vsd*
+*.tmp
+*.bak
+
+# ---------- 密钥 / 环境变量 / 本地配置 ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+config.local.*
+
+# ---------- 本项目：数据集与数据库 ----------
+data/*
+!data/.gitkeep
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.mdb
+*.accdb
+
+# ---------- 本项目：运行输出与日志 ----------
+logs/
+*.log
+outputs/
+results/
+runs/
+checkpoints/
+
+# ---------- 深度学习产物 ----------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.hdf5
+*.npy
+*.npz
+lightning_logs/
+wandb/
+mlruns/
+.cache/
+torch_cache/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---------- 压缩包 / 大文件 ----------
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.rar
