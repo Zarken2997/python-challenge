@@ -35,6 +35,10 @@ from .config import DEFAULT_HOST, DEFAULT_PORT, MAX_TEXT_LENGTH, ClientConfig
 from .hub import HubClient
 from .protocol import Message, ProtocolError
 
+# 注册中心连不上时的自动重试策略：用户经常先开客户端、后开服务器的窗口。
+MAX_HUB_RETRIES = 5
+HUB_RETRY_DELAY_MS = 2000
+
 
 class ClientApp:
     """聊天客户端窗口：注册中心 + 聊天室。"""
@@ -50,6 +54,10 @@ class ClientApp:
         self.host = host
         self.port = port
         self.nickname = name
+        # 注册中心连接失败时的自动重试计数（只为体验：用户常常先开客户端再开服务器）
+        self._hub_retries = 0
+        self._hub_target = (host, port)
+        self._hub_connecting = False
 
         self.hub_var = tk.StringVar(value=f"{host}:{port}")
         self.name_var = tk.StringVar(value=name)
@@ -76,7 +84,9 @@ class ClientApp:
         ttk.Label(toolbar, text="昵称").pack(side=tk.LEFT)
         self.name_entry = ttk.Entry(toolbar, textvariable=self.name_var, width=10)
         self.name_entry.pack(side=tk.LEFT, padx=(4, 12))
-        self.hub_button = ttk.Button(toolbar, text="连接注册中心", command=self.connect_hub)
+        self.hub_button = ttk.Button(
+            toolbar, text="连接注册中心", command=lambda: self.connect_hub(manual=True)
+        )
         self.hub_button.pack(side=tk.LEFT)
         self.hub_disconnect_button = ttk.Button(
             toolbar, text="断开注册中心", command=self.disconnect_hub, state=tk.DISABLED
@@ -181,16 +191,20 @@ class ClientApp:
 
     # ---------------------------------------------------------------- 注册中心
 
-    def connect_hub(self) -> None:
-        if self.hub_client is not None:
+    def connect_hub(self, manual: bool = False) -> None:
+        if self.hub_client is not None or self._hub_connecting:
             return
         host, port = parse_address(self.hub_var.get())
         if port is None:
             port = DEFAULT_PORT
+        if manual:
+            self._hub_retries = 0
+        self._hub_target = (host or DEFAULT_HOST, port)
         self.hub_var.set(f"{host or DEFAULT_HOST}:{port}")
         name = self.name_var.get().strip() or "guest"
         self.status_var.set("注册中心：连接中…")
         self.hub_button.config(state=tk.DISABLED)
+        self._hub_connecting = True
         threading.Thread(
             target=self._connect_hub_worker,
             args=(host or DEFAULT_HOST, port, name),
@@ -210,9 +224,10 @@ class ClientApp:
         client.start_receiver()
         self.hub_client = client
         self.inbox.put(("hub_connected", client.nickname))
-
     def disconnect_hub(self) -> None:
         client, self.hub_client = self.hub_client, None
+        self._hub_connecting = False
+        self._hub_retries = MAX_HUB_RETRIES  # 用户主动断开时停止自动重试
         if client is not None:
             client.close()
         self.status_var.set("注册中心：已断开")
@@ -476,9 +491,28 @@ class ClientApp:
             elif kind == "hub_connected":
                 self._on_hub_connected(str(payload))
             elif kind == "hub_failed":
-                self.status_var.set("注册中心：连接失败")
+                self._hub_connecting = False
                 self.hub_button.config(state=tk.NORMAL)
                 self._append(f"! 连接注册中心失败: {payload}", "error")
+                if self._hub_retries < MAX_HUB_RETRIES:
+                    self._hub_retries += 1
+                    host, port = self._hub_target
+                    self._append(
+                        f"* 请先在服务器窗口点「启动注册中心」，并确认地址是 {host}:{port}；"
+                        f"{HUB_RETRY_DELAY_MS // 1000} 秒后自动重试"
+                        f"（{self._hub_retries}/{MAX_HUB_RETRIES}）",
+                        "system",
+                    )
+                    self.status_var.set(
+                        f"注册中心：连接失败，{self._hub_retries}/{MAX_HUB_RETRIES} 次重试中…"
+                    )
+                    self.root.after(HUB_RETRY_DELAY_MS, self.connect_hub)
+                else:
+                    self.status_var.set("注册中心：连接失败（可点「连接注册中心」重试）")
+                    self._append(
+                        "* 自动重试已用完：确认服务器窗口已「启动注册中心」后，点「连接注册中心」重新连接。",
+                        "system",
+                    )
             elif kind == "hub_disconnect":
                 self.hub_client = None
                 self.status_var.set("注册中心：连接已断开")
@@ -495,6 +529,8 @@ class ClientApp:
     def _on_hub_connected(self, nickname: str) -> None:
         self.nickname = nickname
         self.name_var.set(nickname)
+        self._hub_connecting = False
+        self._hub_retries = 0
         self.status_var.set(f"注册中心：已连接 · {nickname}")
         self.hub_button.config(state=tk.DISABLED)
         self.hub_disconnect_button.config(state=tk.NORMAL)

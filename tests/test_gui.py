@@ -102,6 +102,24 @@ class GuiWindowTests(unittest.TestCase):
         self.assertEqual(app.room_var.get(), "当前聊天室：未加入")
         self.assertFalse(app.online)
 
+    def test_client_schedules_retry_when_hub_unreachable(self) -> None:
+        app = gui_client.ClientApp(self.root, "127.0.0.1", 9000, "alice")
+        app._hub_target = ("127.0.0.1", 9000)
+        # 直接投递一次失败事件，避免依赖真实网络与定时器
+        app.inbox.put(("hub_failed", "[WinError 10061] 无法连接"))
+        app._poll_inbox()
+
+        self.assertEqual(app._hub_retries, 1)
+        self.assertIn("重试", app.status_var.get())
+        text = app.chat_text.get("1.0", tk.END)
+        self.assertIn("启动注册中心", text)  # 提示用户先启动服务器
+
+    def test_client_stops_auto_retry_after_disconnect(self) -> None:
+        app = gui_client.ClientApp(self.root, "127.0.0.1", 9000, "alice")
+        app.disconnect_hub()
+        self.assertEqual(app._hub_retries, gui_client.MAX_HUB_RETRIES)
+        self.assertEqual(app.status_var.get(), "注册中心：已断开")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 03:52 · T1 · 客户端连不上注册中心时自动重试并提示
+- 目标: 用户先开客户端、后开服务器时，聊天记录里只看到两行「连接注册中心失败: [WinError 10061]」，不知道要先启动服务器；希望客户端自己等服务器并重试
+- 改动: `src/task1_socket_chat/gui_client.py`(新增 `MAX_HUB_RETRIES = 5`、`HUB_RETRY_DELAY_MS = 2000`；`connect_hub(manual=False)` 增加在途判断 `_hub_connecting` 与手动时清零重试计数；失败时打印「请先在服务器窗口点『启动注册中心』，并确认地址是 host:port；2 秒后自动重试（n/5）」并 `root.after` 递归重试；`_on_hub_connected` 清零计数；`disconnect_hub()` 把计数置满以停止重试；「连接注册中心」按钮改为 `manual=True`)、`tests/test_gui.py`(新增 2 项：失败事件后计数为 1 且提示含「启动注册中心」；主动断开后重试计数置满)、`src/task1_socket_chat/README.md`(客户端小节补自动重试说明)
+- 验证: `Anaconda3\python.exe -m unittest tests.test_gui -v` → `Ran 11 tests` `OK`；`Anaconda3\python.exe -m unittest discover -s tests` → `Ran 93 tests in 5.194s` `OK`；`pythoncore-3.14-64\python.exe -m unittest discover -s tests` → `Ran 93 tests in 5.159s` `OK`；`logs/_shot_retry.py` 实测：先起客户端（无服务器）→ 截图 `logs/gui-client-retry.png` 显示 10061 错误 + 提示 + 状态「连接失败，1/5 次重试中」；2 秒后再起注册中心并建房 → 截图 `logs/gui-client-recovered.png` 显示「注册中心：已连接 · alice」且房间表出现 `学习室 127.0.0.1:56381`，说明重试确实连上了
+- 决策: 用「有限次自动重试 + 明确提示」而不是静默重试或弹窗，因为课堂演示最常见的失误顺序就是先开客户端；静默重试用户会以为卡死，弹窗又会挡住操作，写进聊天区最直观；上限 5 次（约 10 秒）避免服务器一直不开时无限重连
+- 问题: 用户截图里同一错误出现两次，原因是自动连接失败后用户又手点了一次「连接注册中心」；现在失败会禁用按钮直到重试结束，避免重复点击叠加请求
+- 下一步: 报告与正式截图仍暂缓（用户已说明）
+
 ## 2026-11-23 03:49 · T1 · 多聊天室注册中心与开房审批
 - 目标: 支持同时存在多个聊天室（每个房间一个端口），监控台统一监控所有房间并可全服发消息；客户端可申请开房、由服务器批准；相同 IP:端口 进入同一房间；客户端启动自动连注册中心
 - 改动: `src/task1_socket_chat/hub.py`(新增：`Room`/`RoomRequest`/`ChatHub`/`HubClient`，控制协议 hello/welcome、list_rooms、request_room→room_requested→room_created|room_rejected、rooms 推送)、`src/task1_socket_chat/config.py`(新增 `MAX_ROOMS` 与 `HubConfig`)、`src/task1_socket_chat/gui_server.py`(重写为多聊天室监控台 `MonitorApp`：房间表/开房申请表/跨房间在线用户、建房关闭、批准拒绝、踢人、全服公告、终端日志镜像)、`src/task1_socket_chat/gui_client.py`(启动自动连注册中心、房间列表与加入、申请开房、退出聊天室、`_place_sashes` 摆栏)、`tests/test_hub.py`(新增 17 项)、`tests/test_gui.py`(重写为 9 项多聊天室用例)、`src/task1_socket_chat/README.md`(补 §3.1 控制协议、§4.4 注册中心、改写 §4.5 GUI)、`AGENTS.md:49`(结构树加 `hub.py`)、`tools/devlog.py`(`write_text` 改用 `open(..., newline="\n")`，因为 3.7 的 `Path.write_text` 没有 `newline` 参数)
