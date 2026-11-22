@@ -254,6 +254,11 @@ class ChatServer:
             session.send(Message(type="pong", sender="server"))
             return True
 
+        if kind == "pong":
+            # 客户端对服务端心跳的应答：静默接受，绝不能当成未知类型回 error，
+            # 否则空闲时每轮心跳都会给客户端刷一条错误提示。
+            return True
+
         if kind == "bye":
             LOGGER.info("%s 主动退出", session.name)
             return False

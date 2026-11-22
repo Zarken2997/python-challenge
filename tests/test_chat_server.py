@@ -201,7 +201,15 @@ class RobustnessTests(ChatServerTestCase):
         ping = self.read_until(sock, "ping", timeout=2.0)
         send_message(sock, Message(type="pong", sender="alice"))
         send_message(sock, Message(type="who", sender="alice"))
-        userlist = self.read_until(sock, "userlist")
+
+        seen: list[str] = []
+        while True:
+            message = read_message(sock)
+            seen.append(message.type)
+            if message.type == "userlist":
+                userlist = message
+                break
+        self.assertNotIn("error", seen, f"心跳应答不应产生错误提示，实际收到: {seen}")
         self.assertEqual(userlist.data["users"], ["alice"])
 
     def test_shutdown_stops_accepting_connections(self) -> None:
