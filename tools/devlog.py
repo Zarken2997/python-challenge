@@ -64,8 +64,10 @@ def read_text(path: Path) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
+    # 3.7 的 Path.write_text 没有 newline 参数，这里显式用 open 保证写出的换行是 LF。
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def parse_entries(lines: list[str]) -> list[dict]:

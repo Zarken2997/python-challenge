@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 03:49 · T1 · 多聊天室注册中心与开房审批
+- 目标: 支持同时存在多个聊天室（每个房间一个端口），监控台统一监控所有房间并可全服发消息；客户端可申请开房、由服务器批准；相同 IP:端口 进入同一房间；客户端启动自动连注册中心
+- 改动: `src/task1_socket_chat/hub.py`(新增：`Room`/`RoomRequest`/`ChatHub`/`HubClient`，控制协议 hello/welcome、list_rooms、request_room→room_requested→room_created|room_rejected、rooms 推送)、`src/task1_socket_chat/config.py`(新增 `MAX_ROOMS` 与 `HubConfig`)、`src/task1_socket_chat/gui_server.py`(重写为多聊天室监控台 `MonitorApp`：房间表/开房申请表/跨房间在线用户、建房关闭、批准拒绝、踢人、全服公告、终端日志镜像)、`src/task1_socket_chat/gui_client.py`(启动自动连注册中心、房间列表与加入、申请开房、退出聊天室、`_place_sashes` 摆栏)、`tests/test_hub.py`(新增 17 项)、`tests/test_gui.py`(重写为 9 项多聊天室用例)、`src/task1_socket_chat/README.md`(补 §3.1 控制协议、§4.4 注册中心、改写 §4.5 GUI)、`AGENTS.md:49`(结构树加 `hub.py`)、`tools/devlog.py`(`write_text` 改用 `open(..., newline="\n")`，因为 3.7 的 `Path.write_text` 没有 `newline` 参数)
+- 验证: `Anaconda3\python.exe -m compileall -q src tests tools` → exit 0；`Anaconda3\python.exe -m unittest discover -s tests` → `Ran 91 tests in 5.078s` `OK`；`pythoncore-3.14-64\python.exe -m unittest discover -s tests` → `Ran 91 tests in 5.106s` `OK`；`Anaconda3\python.exe src\task1_socket_chat\hub.py --help` 正常打印用法；后台 `python -m src.task1_socket_chat.hub --port 9111` 输出「注册中心已启动 → 127.0.0.1:9111」；截图 `logs/gui-server.png`（房间 学习室/闲聊室、申请 carol「游戏室」、全服公告日志、状态栏「聊天室 2 个 · 在线 2 人」）与 `logs/gui-client.png`（自动连注册中心、房间地址可读、加入学习室后群聊/私聊/「发送给：bob（私聊）」均正常）
+- 决策: 一房间一 `ChatServer` 实例、注册中心只存元数据，因为握手/心跳/广播/踢人全部复用既有实现与测试，且「一房间一端口」天然满足「相同 IP:端口 = 同一房间」，代价是多房间多占端口与线程；客户端自动连注册中心而不要求手填地址，因为注册中心端口固定 9000、用户不需要再抄端口
+- 问题: `test_hub.py` 首轮 5 项失败——对端关闭时 `recv` 返回 `b""` 而非抛异常（改为读到空串判定关闭）、kick 后注销是异步的（加 `wait_for` 轮询）、申请后先收到 `room_requested` 再收到推送的 `rooms`（用 `read_until` 跳过排队消息）；GUI 首轮截图房间地址与在线用户列被截断（删掉「创建者」「地址」列并显式设置 `sashpos`）
+- 下一步: 报告与正式截图仍暂缓（用户已说明）；可考虑统一 `chat.py --protocol tcp|udp` 入口
+
 ## 2026-11-23 03:36 · T1 · 服务器端口输入框与实际监听端口同步
 - 目标: 用户反馈「服务器控制台上端的端口与实际地址端口不同步」——地址栏显示 `127.0.0.1:50380`，但端口输入框仍是 `0`
 - 改动: `src/task1_socket_chat/gui_server.py`(保存 `host_entry`/`port_entry` 引用；`start_server()` 成功后 `self.port_var.set(str(bound_port))` 并把两个输入框置为 DISABLED；`stop_server()` 恢复 NORMAL 且保留端口值，便于用同一地址重启)、`tests/test_gui.py`(断言 `port_var` 等于真实端口、运行中两个输入框 disabled、停止后恢复可编辑且端口保留)、`src/task1_socket_chat/README.md`(端口自动分配流程补「回填 + 锁定 + 停止后恢复」)

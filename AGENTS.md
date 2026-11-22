@@ -46,7 +46,7 @@ python-challenge/
 │  ├─ DEVLOG.archive.md      # 日志归档（超过 500 行时滚动）
 │  └─ reports/               # 设计报告：taskN-design.md 与截图 assets/
 ├─ src/
-│  ├─ task1_socket_chat/     # 任务 1：protocol.py / server.py / client.py / udp_chat.py / gui_server.py / gui_client.py
+│  ├─ task1_socket_chat/     # 任务 1：protocol.py / server.py / client.py / udp_chat.py / hub.py / gui_server.py / gui_client.py
 │  ├─ task2_db_system/       # 任务 2：db.py / models.py / cli.py / seed.py
 │  └─ task3_mnist_cnn/       # 任务 3：dataset.py / model.py / train.py / evaluate.py
 ├─ tests/                    # test_*.py，与被测模块同名

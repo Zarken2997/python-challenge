@@ -1,6 +1,6 @@
-"""GUI 冒烟测试：参数解析、窗口能否构建、启停按钮是否接到服务器。
+"""GUI 冒烟测试：参数解析、窗口能否构建、注册中心启停与列表刷新是否接通。
 
-不验证像素布局（那需要人工看截图），只保证「能打开、能启动、不抛异常」。
+不验证像素布局（那需要人工看截图），只保证「能打开、能启动、列表能刷新、不抛异常」。
 没有图形显示的环境（例如无桌面的 CI）会自动跳过窗口测试。
 """
 
@@ -12,13 +12,14 @@ import unittest
 import tkinter as tk
 
 from src.task1_socket_chat import gui_client, gui_server
+from src.task1_socket_chat.config import DEFAULT_PORT
 
 
 class GuiParserTests(unittest.TestCase):
     def test_server_parser_defaults(self) -> None:
         args = gui_server.build_parser().parse_args([])
         self.assertEqual(args.host, "127.0.0.1")
-        self.assertEqual(args.port, 0)  # 0 表示由系统自动分配端口
+        self.assertEqual(args.port, DEFAULT_PORT)  # 控制端口默认 9000
 
     def test_client_parser_accepts_port_and_name(self) -> None:
         args = gui_client.build_parser().parse_args(["--port", "9101", "--name", "alice"])
@@ -60,38 +61,46 @@ class GuiWindowTests(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_server_window_builds_and_starts(self) -> None:
-        app = gui_server.ServerApp(self.root, "127.0.0.1", 0)
+    def test_monitor_window_starts_hub_and_lists_rooms(self) -> None:
+        app = gui_server.MonitorApp(self.root, "127.0.0.1", 0)
         self.addCleanup(logging.getLogger("task1").removeHandler, app.handler)
 
-        port = app.start_server()
-        self.assertIsNotNone(app.server)
+        port = app.start_hub()
+        self.assertIsNotNone(app.hub)
         self.assertIsInstance(port, int)
         assert port is not None  # 供类型检查器与读者确认：下面要按整数端口断言
         self.assertGreater(port, 0)
         self.assertIn(str(port), app.status_var.get())
-        self.assertIn(f"127.0.0.1:{port}", app.address_var.get())
         # 端口输入框要同步成真实端口，不能在界面上仍显示 0
         self.assertEqual(app.port_var.get(), str(port))
         self.assertTrue(app.port_entry.instate(["disabled"]))
         self.assertTrue(app.host_entry.instate(["disabled"]))
-        self.assertEqual(app.start_server(), port)  # 重复点「创建聊天室」应返回同一端口，不重开服务
-        self.assertTrue(app.copy_button.instate(["!disabled"]))
-        app.copy_address()
-        self.assertEqual(self.root.clipboard_get(), f"127.0.0.1:{port}")
-        app.stop_server()
-        self.assertIsNone(app.server)
+        self.assertEqual(app.start_hub(), port)  # 重复点「启动」应返回同一端口，不重开服务
+
+        room = app.hub.create_room("测试房")
+        app._refresh_all_now()
+        room_iid = str(room.room_id)
+        self.assertIn(room_iid, app.room_tree.get_children())
+        values = app.room_tree.item(room_iid, "values")
+        self.assertEqual(values[0], f"127.0.0.1:{room.port}")
+
+        request = app.hub.submit_request("审批房", "alice", lambda message: None)
+        app._refresh_all_now()
+        self.assertIn(str(request.request_id), app.request_tree.get_children())
+
+        app.stop_hub()
+        self.assertIsNone(app.hub)
         self.assertEqual(app.status_var.get(), "未启动")
-        self.assertIn("（启动后自动分配", app.address_var.get())
         # 停止后输入框恢复可编辑，保留刚用过的端口便于原地址重启
         self.assertTrue(app.port_entry.instate(["!disabled"]))
         self.assertEqual(app.port_var.get(), str(port))
 
     def test_client_window_builds(self) -> None:
         app = gui_client.ClientApp(self.root, "127.0.0.1", 9000, "alice")
-        self.assertEqual(app.status_var.get(), "未连接")
+        self.assertEqual(app.hub_var.get(), "127.0.0.1:9000")
+        self.assertEqual(app.status_var.get(), "注册中心：未连接")
+        self.assertEqual(app.room_var.get(), "当前聊天室：未加入")
         self.assertFalse(app.online)
-        self.assertEqual(app.target_var.get(), "发送给：所有人（群聊）")
 
 
 if __name__ == "__main__":

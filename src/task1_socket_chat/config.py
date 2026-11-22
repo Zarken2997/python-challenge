@@ -8,6 +8,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
 DEFAULT_UDP_PORT = 9100
 
+MAX_ROOMS = 20
+"""同时存在的聊天室上限（每个聊天室占用一个端口）。"""
+
 MAX_NAME_LENGTH = 16
 """昵称最大长度（字符数）。"""
 
@@ -45,6 +48,38 @@ class ServerConfig:
             raise ValueError(f"ping_interval 必须 > 0: {self.ping_interval}")
         if self.max_missed_pings < 1:
             raise ValueError(f"max_missed_pings 必须 >= 1: {self.max_missed_pings}")
+
+
+@dataclass(frozen=True)
+class HubConfig:
+    """注册中心（控制端口）参数：房间列表、开房申请都走这个端口。
+
+    聊天室本身各自监听一个端口，端口号由系统分配；控制端口固定（默认 9000），
+    这样客户端启动时才知道该连哪里。
+    """
+
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    backlog: int = 16
+    max_clients: int = 50
+    ping_interval: float = 30.0
+    max_missed_pings: int = 2
+    handshake_timeout: float = 10.0
+    max_rooms: int = MAX_ROOMS
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.port <= 65535:
+            raise ValueError(f"端口必须在 0-65535 之间: {self.port}")
+        if self.backlog < 1:
+            raise ValueError(f"backlog 必须 >= 1: {self.backlog}")
+        if self.max_clients < 1:
+            raise ValueError(f"max_clients 必须 >= 1: {self.max_clients}")
+        if self.ping_interval <= 0:
+            raise ValueError(f"ping_interval 必须 > 0: {self.ping_interval}")
+        if self.max_missed_pings < 1:
+            raise ValueError(f"max_missed_pings 必须 >= 1: {self.max_missed_pings}")
+        if self.max_rooms < 1:
+            raise ValueError(f"max_rooms 必须 >= 1: {self.max_rooms}")
 
 
 @dataclass(frozen=True)
