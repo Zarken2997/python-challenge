@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 04:05 · T1 · 监控台按房间看消息、人数实时刷新
+- 目标: 修三个体验问题——客户端切换房间后人数不刷新；服务器端把所有房间的聊天都打到同一条终端输出里，应该「进入某个房间」才看得到该房消息；房间/申请/踢人等控制面信息应与聊天分开显示，且「看监控」不能改变房间人数
+- 改动: `src/task1_socket_chat/server.py`(新增 `on_users_changed` / `on_room_event` 回调，加入/离开时通知人数变化，chat/private 不再写 info 日志而改走回调)、`src/task1_socket_chat/hub.py`(`Room.messages = deque(maxlen=300)` 按房间缓存消息，`ChatHub.on_room_event`、`_record_room_event()`、`room_messages()`，建房间时把 `ChatServer` 的两个回调接到 hub)、`src/task1_socket_chat/gui_server.py`(右侧改为 Notebook 两个标签「房间消息（需进入房间）」「系统日志（房间/申请/踢人）」；新增 `monitor_selected_room()` / `stop_monitor()` / `clear_room_messages()` / `_on_room_event()` / `_drain_room_events()` / `_append_message()`；双击房间改为进入监控，关房改用「关闭选中」按钮)、`src/task1_socket_chat/gui_client.py`(新增 `_auto_refresh_rooms()` 每秒拉一次房间列表)、`tests/test_hub.py`(新增 `RoomMonitorTests` 3 项：两个房间的消息互不串台、`on_room_event` 收到本房 chat、人数变化主动推送且离开后回到 0)、`tests/test_gui.py`(新增监控页测试：未进入房间不显示消息、进入后只显示本房消息、进入监控不改变在线人数、退出后不再追加)、`src/task1_socket_chat/README.md`(GUI 小节改写为两个标签页 + 进入监控流程；测试数改为 97；设计决策补「回调而非解析日志」「推送为主、轮询兜底」)
+- 验证: `Anaconda3\python.exe -m compileall -q src tests tools` → exit 0；`Anaconda3\python.exe -m unittest discover -s tests` → `Ran 97 tests` `OK`（连跑 3 次均 OK）；`pythoncore-3.14-64\python.exe -m unittest discover -s tests` → `Ran 97 tests` `OK`（连跑 3 次均 OK）；`logs/_shot_server.py` 截图 `logs/gui-server.png` 显示「正在监控：学习室（127.0.0.1:54795）」且消息区只有学习室的加入/聊天/公告；`logs/gui-server-log.png` 显示系统日志标签只剩建房/申请/公告等控制事件，没有聊天内容；`logs/_shot_client.py` 先加入学习室、再退出加入闲聊室，截图 `logs/gui-client.png` 显示房间表 `学习室 1 人` `闲聊室 1 人`，不再需要手点刷新
+- 决策: 让 `ChatServer` 主动回调 hub，而不是让监控台去解析日志字符串，因为日志格式是给人看的、随时会变，回调传的是结构化 `Message`，按房间归类才可靠；进入监控只读内存缓存、不建立任何 socket 连接，所以看监控天然不会改变人数
+- 问题: 首轮 `test_room_keeps_its_own_messages` 在 3.14 上偶发失败——原来的等待条件 `len(room_messages) >= 1` 会被「xx 加入了聊天室」这条系统消息提前满足，真正的 chat 还没到；改为等待「具体那句话」出现后稳定通过
+- 下一步: 报告与截图仍暂缓；如需要，可给房间消息加搜索/导出，或把每个房间的历史落盘到 `logs/`
+
 ## 2026-11-23 03:52 · T1 · 客户端连不上注册中心时自动重试并提示
 - 目标: 用户先开客户端、后开服务器时，聊天记录里只看到两行「连接注册中心失败: [WinError 10061]」，不知道要先启动服务器；希望客户端自己等服务器并重试
 - 改动: `src/task1_socket_chat/gui_client.py`(新增 `MAX_HUB_RETRIES = 5`、`HUB_RETRY_DELAY_MS = 2000`；`connect_hub(manual=False)` 增加在途判断 `_hub_connecting` 与手动时清零重试计数；失败时打印「请先在服务器窗口点『启动注册中心』，并确认地址是 host:port；2 秒后自动重试（n/5）」并 `root.after` 递归重试；`_on_hub_connected` 清零计数；`disconnect_hub()` 把计数置满以停止重试；「连接注册中心」按钮改为 `manual=True`)、`tests/test_gui.py`(新增 2 项：失败事件后计数为 1 且提示含「启动注册中心」；主动断开后重试计数置满)、`src/task1_socket_chat/README.md`(客户端小节补自动重试说明)

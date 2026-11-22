@@ -67,6 +67,7 @@ class ClientApp:
 
         self._build_ui()
         self._poll_inbox()
+        self._auto_refresh_rooms()
         self.root.after(200, self.connect_hub)
 
     # ---------------------------------------------------------------- 界面
@@ -241,6 +242,13 @@ class ClientApp:
             self._append("! 尚未连接注册中心", "error")
             return
         client.request_rooms()
+
+    def _auto_refresh_rooms(self) -> None:
+        """每秒向注册中心要一次房间列表：人数随进出实时变化，不必手动刷新。"""
+        client = self.hub_client
+        if client is not None and client.connected:
+            client.request_rooms()
+        self.root.after(1000, self._auto_refresh_rooms)
 
     def request_room(self) -> None:
         client = self.hub_client

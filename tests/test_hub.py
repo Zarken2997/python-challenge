@@ -241,5 +241,54 @@ class ControlProtocolTests(HubTestBase):
         self.assert_peer_closed(control)
 
 
+class RoomMonitorTests(HubTestBase):
+    """监控台按房间看消息：不同房间的聊天不能混在一起。"""
+
+    def test_room_keeps_its_own_messages(self) -> None:
+        first = self.hub.create_room("一号房")
+        second = self.hub.create_room("二号房")
+        alice, _ = self.open_room(first.host, first.port, "alice")
+        bob, _ = self.open_room(second.host, second.port, "bob")
+        send_message(alice, Message(type="chat", sender="alice", text="一号房的话"))
+        send_message(bob, Message(type="chat", sender="bob", text="二号房的话"))
+        # 注意：加入房间本身也会产生一条系统消息，所以要等「具体那句话」出现，不能只等数量
+        self.wait_for(
+            lambda: any(m.text == "一号房的话" for m in self.hub.room_messages(first.room_id))
+            and any(m.text == "二号房的话" for m in self.hub.room_messages(second.room_id))
+        )
+
+        first_texts = [m.text for m in self.hub.room_messages(first.room_id)]
+        second_texts = [m.text for m in self.hub.room_messages(second.room_id)]
+        self.assertIn("一号房的话", first_texts)
+        self.assertNotIn("二号房的话", first_texts)
+        self.assertIn("二号房的话", second_texts)
+        self.assertNotIn("一号房的话", second_texts)
+
+    def test_room_event_callback_receives_message(self) -> None:
+        events: list[tuple[int, str]] = []
+        self.hub.on_room_event = lambda room_id, message: events.append((room_id, message.text))
+        room = self.hub.create_room("回调房")
+        alice, _ = self.open_room(room.host, room.port, "alice")
+        send_message(alice, Message(type="chat", sender="alice", text="回调测试"))
+        self.wait_for(lambda: any(text == "回调测试" for _room, text in events))
+        self.assertTrue(all(room_id == room.room_id for room_id, _text in events))
+
+    def test_user_count_change_is_pushed_to_control_clients(self) -> None:
+        room = self.hub.create_room("计数房")
+        control, _ = self.open_control("carol")
+        alice, _ = self.open_room(room.host, room.port, "alice")
+        # 不主动 list_rooms，也应因「人数变化」收到推送
+        message = self.read_until(control, "rooms")
+        users = {entry["name"]: entry["users"] for entry in message.data["rooms"]}
+        self.assertEqual(users["计数房"], 1)
+
+        # 客户端离开后，人数同样要主动推送回 0，界面上「双击切换房间人数没变」才不会复现
+        send_message(alice, Message(type="bye", sender="alice"))
+        self.wait_for(lambda: self.hub.online_count == 0)
+        message = self.read_until(control, "rooms")
+        users = {entry["name"]: entry["users"] for entry in message.data["rooms"]}
+        self.assertEqual(users["计数房"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,10 @@ class ChatServer:
         self._accept_thread: threading.Thread | None = None
         self._client_threads: set[threading.Thread] = set()
         self._threads_lock = threading.Lock()
+        # 下面两个回调由注册中心（或监控台）挂载，用来感知「人数变化」与「房间内消息」；
+        # 服务器本身不关心它们做什么，保持网络层与界面层解耦。
+        self.on_users_changed = None  # type: ignore[assignment]
+        self.on_room_event = None  # type: ignore[assignment]
 
     @property
     def address(self) -> tuple[str, int] | None:
@@ -114,9 +118,12 @@ class ChatServer:
             return 0
         LOGGER.info("[公告] %s", body[:80])
         message = Message(type="system", sender="server", text=body, data={"event": "notice"})
+        sent = 0
         with self._lock:
             targets = list(self._sessions.values())
-        return sum(1 for session in targets if session.send(message))
+        sent = sum(1 for session in targets if session.send(message))
+        self._emit_room_event(message)
+        return sent
 
     def kick(self, name: str) -> bool:
         """把指定昵称的客户端请出聊天室；返回是否找到该客户端。
@@ -247,11 +254,40 @@ class ChatServer:
             ),
             exclude=session.name,
         )
+        self._emit_room_event(
+            Message(
+                type="system",
+                sender="server",
+                text=f"{session.name} 加入了聊天室",
+                data={"event": "join", "users": users},
+            )
+        )
+        self._notify_users_changed()
 
         try:
             self._chat_loop(session)
         finally:
             self._unregister(session)
+
+    def _notify_users_changed(self) -> None:
+        """通知外部「本房间人数变了」，让注册中心推送新的房间列表。"""
+        callback = self.on_users_changed
+        if callback is None:
+            return
+        try:
+            callback(self)
+        except Exception as exc:  # noqa: BLE001 - 回调失败不能拖垮网络线程
+            LOGGER.warning("人数变化回调失败: %s", exc)
+
+    def _emit_room_event(self, message: Message) -> None:
+        """把房间内的消息交给外部（监控台按房间分开展示，避免所有房间混在一起）。"""
+        callback = self.on_room_event
+        if callback is None:
+            return
+        try:
+            callback(message)
+        except Exception as exc:  # noqa: BLE001 - 同上
+            LOGGER.warning("房间消息回调失败: %s", exc)
 
     def _chat_loop(self, session: ClientSession) -> None:
         session.sock.settimeout(self.config.ping_interval)
@@ -289,7 +325,9 @@ class ChatServer:
                 )
                 return True
             self._broadcast(Message(type="chat", sender=session.name, text=text), exclude=session.name)
-            LOGGER.info("[广播] %s: %s", session.name, text[:80])
+            # 聊天内容只在「房间消息」里展示（监控台按房间分开），系统日志里最多留 debug。
+            LOGGER.debug("[广播] %s: %s", session.name, text[:80])
+            self._emit_room_event(Message(type="chat", sender=session.name, text=text))
             return True
 
         if kind == "private":
@@ -309,7 +347,10 @@ class ChatServer:
                 )
                 return True
             recipient.send(Message(type="private", sender=session.name, text=text, target=target))
-            LOGGER.info("[私聊] %s -> %s: %s", session.name, target, text[:80])
+            LOGGER.debug("[私聊] %s -> %s: %s", session.name, target, text[:80])
+            self._emit_room_event(
+                Message(type="private", sender=session.name, text=text, target=target)
+            )
             return True
 
         if kind == "who":
@@ -357,6 +398,15 @@ class ChatServer:
                 data={"event": "leave", "users": users},
             ),
         )
+        self._emit_room_event(
+            Message(
+                type="system",
+                sender="server",
+                text=f"{session.name} 离开了聊天室",
+                data={"event": "leave", "users": users},
+            )
+        )
+        self._notify_users_changed()
 
     def _unique_name(self, requested: str) -> str:
         """在持锁状态下生成唯一昵称，重名时追加 ``_2``、``_3``……"""

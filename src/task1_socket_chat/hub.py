@@ -21,6 +21,7 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
 
 if __package__ in (None, ""):
     # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
@@ -45,11 +46,14 @@ from .server import ChatServer, ClientSession
 
 LOGGER = logging.getLogger("task1.hub")
 
+# 每个房间保留最近多少条消息给监控台回看；够课堂演示用，又不会无限吃内存。
+ROOM_HISTORY = 300
+
 
 class Room:
     """一个正在监听的聊天室：名称、地址、底层服务器与创建者。"""
 
-    __slots__ = ("room_id", "name", "server", "host", "port", "created_by", "created_at")
+    __slots__ = ("room_id", "name", "server", "host", "port", "created_by", "created_at", "messages")
 
     def __init__(
         self,
@@ -67,6 +71,8 @@ class Room:
         self.port = port
         self.created_by = created_by
         self.created_at = time.time()
+        # 监控台进入该房间后能看到的消息（含历史），只在内存里保留最近若干条。
+        self.messages: deque = deque(maxlen=ROOM_HISTORY)
 
     @property
     def address(self) -> str:
@@ -122,6 +128,8 @@ class ChatHub:
         self._next_request_id = 1
         self._accept_thread: threading.Thread | None = None
         self._threads: set[threading.Thread] = set()
+        # 监控台挂载：房间内每来一条消息就回调 (room_id, message)
+        self.on_room_event = None  # type: ignore[assignment]
 
     # ------------------------------------------------------------ 生命周期
 
@@ -248,6 +256,10 @@ class ChatHub:
         except OSError as exc:
             raise RuntimeError(f"聊天室监听失败: {exc}") from exc
         room = Room(room_id, room_name, server, host, port, sanitize_name(created_by))
+        # 把房间的「人数变化」与「消息」接到注册中心：人数变化推给客户端，
+        # 消息按房间缓存并转给监控台（避免所有房间的聊天混在一条终端日志里）。
+        server.on_users_changed = lambda _server: self._push_rooms()
+        server.on_room_event = lambda message: self._record_room_event(room, message)
         with self._lock:
             self._rooms[room_id] = room
         LOGGER.info("[聊天室] 创建「%s」→ %s（申请人：%s）", room.name, room.address, room.created_by)
@@ -452,7 +464,7 @@ class ChatHub:
         return True
 
     def _push_rooms(self) -> None:
-        """房间增删后主动推一次列表，客户端不必等下一次轮询。"""
+        """房间增删或人数变化后主动推一次列表，客户端不必等下一次轮询。"""
         with self._lock:
             clients = list(self._control_clients.values())
         if not clients:
@@ -460,6 +472,24 @@ class ChatHub:
         message = Message(type="rooms", sender="server", data={"rooms": self.rooms_snapshot()})
         for session in clients:
             session.send(message)
+
+    def _record_room_event(self, room: Room, message: Message) -> None:
+        """缓存房间内最近的消息，并转给监控台（按房间分开显示）。"""
+        room.messages.append(message)
+        callback = self.on_room_event
+        if callback is None:
+            return
+        try:
+            callback(room.room_id, message)
+        except Exception as exc:  # noqa: BLE001 - 界面回调出错不能影响房间线程
+            LOGGER.warning("房间消息回调失败: %s", exc)
+
+    def room_messages(self, room_id: int, limit: int = ROOM_HISTORY) -> list[Message]:
+        """取某房间最近的消息（进入房间监控时先补历史）。"""
+        room = self.get_room(room_id)
+        if room is None:
+            return []
+        return list(room.messages)[-limit:]
 
 
 class HubClient:

@@ -107,10 +107,15 @@ class MonitorApp:
         self.count_var = tk.StringVar(value="聊天室 0 个 · 在线 0 人")
         self.notice_var = tk.StringVar()
         self.auto_scroll = tk.BooleanVar(value=True)
+        self.monitor_var = tk.StringVar(value="未进入任何房间：在左侧选中房间后点「进入监控」")
+        # 正在监控的房间 id；None 表示没进房间，房间消息不显示
+        self.monitor_room_id: int | None = None
+        self.room_queue: queue.Queue[tuple[int, object]] = queue.Queue()
 
         self._build_ui()
         self._refresh_all()
         self._poll_logs()
+        self._poll_room_events()
 
     # ---------------------------------------------------------------- 界面
 
@@ -182,7 +187,7 @@ class MonitorApp:
         self.room_tree.column("address", width=170, anchor=tk.W)
         self.room_tree.column("users", width=50, anchor=tk.CENTER)
         self.room_tree.pack(fill=tk.BOTH, expand=True)
-        self.room_tree.bind("<Double-1>", lambda _event: self.close_selected_room())
+        self.room_tree.bind("<Double-1>", lambda _event: self.monitor_selected_room())
 
         room_buttons = ttk.Frame(rooms_frame)
         room_buttons.pack(fill=tk.X, pady=(6, 0))
@@ -244,17 +249,58 @@ class MonitorApp:
         user_buttons.pack(fill=tk.X, pady=(6, 0))
         ttk.Button(user_buttons, text="踢出选中", command=self.kick_selected_user).pack(side=tk.LEFT)
 
-        # ---- 终端监控
-        right = ttk.Labelframe(paned, text="终端监控（与命令行输出一致）", padding=8)
+        # ---- 右侧：房间消息 / 系统日志 两个标签页
+        right = ttk.Frame(paned)
         paned.add(right, weight=3)
+        self.right_notebook = ttk.Notebook(right)
+        self.right_notebook.pack(fill=tk.BOTH, expand=True)
 
-        log_bar = ttk.Frame(right)
+        # 标签 1：房间消息。只有「进入」某个房间后才能看到里面的聊天，
+        # 避免所有房间的消息混在同一条终端输出里。
+        room_tab = ttk.Frame(self.right_notebook, padding=8)
+        self.right_notebook.add(room_tab, text="房间消息（需进入房间）")
+        self.monitor_var = tk.StringVar(value="未进入任何房间：在左侧选中房间后点「进入监控」")
+        ttk.Label(room_tab, textvariable=self.monitor_var, foreground="#0b5fa5").pack(anchor=tk.W)
+        monitor_bar = ttk.Frame(room_tab)
+        monitor_bar.pack(fill=tk.X, pady=(6, 6))
+        ttk.Button(monitor_bar, text="进入选中房间", command=self.monitor_selected_room).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(monitor_bar, text="退出监控", command=self.stop_monitor).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(monitor_bar, text="清空消息", command=self.clear_room_messages).pack(side=tk.LEFT)
+
+        message_frame = ttk.Frame(room_tab)
+        message_frame.pack(fill=tk.BOTH, expand=True)
+        message_scroll = ttk.Scrollbar(message_frame)
+        message_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.message_text = tk.Text(
+            message_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            font=("Consolas", 10),
+            yscrollcommand=message_scroll.set,
+            background="#f7fbf7",
+            foreground="#1f2933",
+        )
+        self.message_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        message_scroll.config(command=self.message_text.yview)
+        self.message_text.tag_configure("chat", foreground="#1f2933")
+        self.message_text.tag_configure("private", foreground="#7b1fa2")
+        self.message_text.tag_configure("system", foreground="#6b7785")
+
+        # 标签 2：系统日志（房间创建/关闭、开房申请、踢人、公告、错误等控制面事件）
+        log_tab = ttk.Frame(self.right_notebook, padding=8)
+        self.right_notebook.add(log_tab, text="系统日志（房间 / 申请 / 踢人）")
+
+        log_bar = ttk.Frame(log_tab)
         log_bar.pack(fill=tk.X, pady=(0, 6))
         ttk.Checkbutton(log_bar, text="自动滚动", variable=self.auto_scroll).pack(side=tk.LEFT)
         ttk.Button(log_bar, text="清空", command=self.clear_log).pack(side=tk.RIGHT)
         ttk.Button(log_bar, text="保存日志…", command=self.save_log).pack(side=tk.RIGHT, padx=6)
 
-        text_frame = ttk.Frame(right)
+        text_frame = ttk.Frame(log_tab)
         text_frame.pack(fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(text_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -301,6 +347,7 @@ class MonitorApp:
 
         self.hub = hub
         self._bound_port = bound_port
+        hub.on_room_event = self._on_room_event
         self.port_var.set(str(bound_port))
         self.host_entry.config(state=tk.DISABLED)
         self.port_entry.config(state=tk.DISABLED)
@@ -318,8 +365,10 @@ class MonitorApp:
     def stop_hub(self) -> None:
         hub, self.hub = self.hub, None
         if hub is not None:
+            hub.on_room_event = None
             hub.shutdown()
             self._append("* 注册中心已停止，所有聊天室与客户端连接已关闭", "notice")
+        self.stop_monitor()
         self._bound_port = None
         self.status_var.set("未启动")
         self.host_entry.config(state=tk.NORMAL)
@@ -371,7 +420,83 @@ class MonitorApp:
             return
         if not self.hub.close_room(room_id):
             self._append(f"! 关闭失败：聊天室 {room_id} 已不存在", "warning")
+        if self.monitor_room_id == room_id:
+            self.stop_monitor()
+            self._append("* 正在监控的房间已关闭，已退出房间监控", "notice")
         self._refresh_all_now()
+
+    # ---------------------------------------------------------------- 房间监控
+
+    def monitor_selected_room(self) -> None:
+        """进入选中房间的消息监控：只有进入后才看得到房内聊天。"""
+        if self.hub is None:
+            messagebox.showinfo("未启动", "请先启动注册中心")
+            return
+        selection = self.room_tree.selection()
+        if not selection:
+            messagebox.showinfo("未选择", "请先在左侧选择一个聊天室")
+            return
+        room_id = int(selection[0])
+        room = self.hub.get_room(room_id)
+        if room is None:
+            return
+        self.monitor_room_id = room_id
+        self.monitor_var.set(f"正在监控：{room.name}（{room.address}）")
+        self.clear_room_messages()
+        for message in self.hub.room_messages(room_id):
+            self._append_message(message)
+        self.right_notebook.select(0)  # 切到「房间消息」标签
+        self._append(f"* 已进入聊天室「{room.name}」的消息监控", "notice")
+
+    def stop_monitor(self) -> None:
+        """退出房间监控：之后再来的消息只进历史缓存，不显示在界面上。"""
+        if self.monitor_room_id is None:
+            return
+        self.monitor_room_id = None
+        self.monitor_var.set("未进入任何房间：在左侧选中房间后点「进入监控」")
+
+    def clear_room_messages(self) -> None:
+        self.message_text.config(state=tk.NORMAL)
+        self.message_text.delete("1.0", tk.END)
+        self.message_text.config(state=tk.DISABLED)
+
+    def _on_room_event(self, room_id: int, message: object) -> None:
+        """注册中心回调（来自房间线程）：只把当前监控房间的消息放进队列。"""
+        if self.monitor_room_id is None or room_id != self.monitor_room_id:
+            return
+        self.room_queue.put((room_id, message))
+
+    def _drain_room_events(self) -> None:
+        """把队列里属于当前监控房间的消息全部画到文本区。"""
+        try:
+            while True:
+                room_id, message = self.room_queue.get_nowait()
+                if room_id == self.monitor_room_id:
+                    self._append_message(message)
+        except queue.Empty:
+            pass
+
+    def _poll_room_events(self) -> None:
+        self._drain_room_events()
+        self.root.after(120, self._poll_room_events)
+
+    def _append_message(self, message: object) -> None:
+        """把一条 Message 渲染成「时间 发送者: 内容」，并按类型着色。"""
+        kind = getattr(message, "type", "")
+        sender = getattr(message, "sender", "?")
+        text = getattr(message, "text", "")
+        target = getattr(message, "target", None)
+        stamp = time.strftime("%H:%M:%S", time.localtime(getattr(message, "ts", time.time())))
+        if kind == "chat":
+            line, tag = f"[{stamp}] {sender}: {text}", "chat"
+        elif kind == "private":
+            line, tag = f"[{stamp}] {sender} → {target}（私聊）: {text}", "private"
+        else:
+            line, tag = f"[{stamp}] * {text}", "system"
+        self.message_text.config(state=tk.NORMAL)
+        self.message_text.insert(tk.END, line.rstrip() + "\n", tag)
+        self.message_text.see(tk.END)
+        self.message_text.config(state=tk.DISABLED)
 
     def copy_selected_address(self) -> None:
         selection = self.room_tree.selection()

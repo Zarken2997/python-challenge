@@ -13,6 +13,12 @@ import tkinter as tk
 
 from src.task1_socket_chat import gui_client, gui_server
 from src.task1_socket_chat.config import DEFAULT_PORT
+from src.task1_socket_chat.protocol import Message
+
+
+def make_message(kind: str, sender: str, text: str = "", **extra: object) -> Message:
+    """构造一条用于界面渲染测试的消息。"""
+    return Message(type=kind, sender=sender, text=text, **extra)  # type: ignore[arg-type]
 
 
 class GuiParserTests(unittest.TestCase):
@@ -94,6 +100,44 @@ class GuiWindowTests(unittest.TestCase):
         # 停止后输入框恢复可编辑，保留刚用过的端口便于原地址重启
         self.assertTrue(app.port_entry.instate(["!disabled"]))
         self.assertEqual(app.port_var.get(), str(port))
+
+    def test_monitor_shows_only_joined_room_messages(self) -> None:
+        """监控页：只有进入房间后才显示该房消息，且进入监控不改变在线人数。"""
+        app = gui_server.MonitorApp(self.root, "127.0.0.1", 0)
+        self.addCleanup(logging.getLogger("task1").removeHandler, app.handler)
+        self.assertIsNotNone(app.start_hub())
+        assert app.hub is not None
+
+        first = app.hub.create_room("一号房")
+        second = app.hub.create_room("二号房")
+        app._refresh_all_now()
+
+        # 未进入任何房间时，即使有消息也不应显示
+        app.hub._record_room_event(first, make_message("chat", "alice", text="进入前的消息"))
+        app._drain_room_events()
+        self.assertEqual(app.message_text.get("1.0", tk.END).strip(), "")
+
+        # 进入一号房：回放历史，且只显示本房消息
+        app.room_tree.selection_set(str(first.room_id))
+        online_before = app.hub.online_count
+        app.monitor_selected_room()
+        self.assertIn("进入前的消息", app.message_text.get("1.0", tk.END))
+        self.assertEqual(app.hub.online_count, online_before, "进入监控不应增加在线人数")
+        self.assertIn("一号房", app.monitor_var.get())
+
+        app.hub._record_room_event(second, make_message("chat", "bob", text="二号房的消息"))
+        app.hub._record_room_event(first, make_message("chat", "bob", text="一号房的新消息"))
+        app._drain_room_events()
+        text = app.message_text.get("1.0", tk.END)
+        self.assertIn("一号房的新消息", text)
+        self.assertNotIn("二号房的消息", text)
+
+        app.stop_monitor()
+        app.hub._record_room_event(first, make_message("chat", "bob", text="退出后的消息"))
+        app._drain_room_events()
+        self.assertNotIn("退出后的消息", app.message_text.get("1.0", tk.END))
+
+        app.stop_hub()
 
     def test_client_window_builds(self) -> None:
         app = gui_client.ClientApp(self.root, "127.0.0.1", 9000, "alice")
