@@ -6,6 +6,15 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 02:48 · T1 · GUI 启动时把窗口提到最前
+- 目标: 用户从终端敲 `python -m src.task1_socket_chat.gui_server` 后「光标卡住、不弹窗」，排查并避免窗口被终端压住造成的「没反应」错觉
+- 改动: `src/task1_socket_chat/gui_server.py`(新增 `bring_to_front` 并在 main 调用)、`src/task1_socket_chat/gui_client.py`(同上)
+- 验证: 枚举窗口句柄的临时脚本（`logs/_check_window.py`，已删）启动两个模块 → `任务1 · 聊天服务器监控台: hwnd=1509654 visible=True`、`任务1 · 聊天客户端: hwnd=3212536 visible=True`；`python -m unittest discover -s tests` → `Ran 69 tests in 4.784s` `OK`
+- 决策: 只做「lift + focus_force + 800ms 置顶」而不常驻置顶，因为常驻置顶会挡住用户其它窗口；不改成独立控制台，因为窗口本来就能创建，问题只在层级
+- 问题: 进程占住终端是 `mainloop()` 的正常行为，关闭窗口或 Ctrl+C 才返回提示符；若窗口仍不可见，多半在另一显示器或 Alt+Tab 列表里
+- 下一步: 报告与截图仍暂缓
+
+
 ## 2026-11-23 02:22 · T1 · 图形界面：服务器监控台与聊天客户端
 - 目标: 给任务 1 增加图形界面（对应题目加分项），明确区分服务器端与客户端两个程序；服务器端要能直接监控终端输出、查看在线用户、踢人与发公告
 - 改动: `src/task1_socket_chat/gui_server.py`(新增)、`src/task1_socket_chat/gui_client.py`(新增)、`src/task1_socket_chat/server.py`(新增 online_users/user_count/broadcast_system/kick，ClientSession 记录 since)、`src/task1_socket_chat/client.py`(新增 on_message/on_disconnect 回调、echo、request_users)、`tests/test_chat_server.py`(新增 AdminTests 与回调测试)、`tests/test_gui.py`(新增)、`src/task1_socket_chat/README.md`(补 GUI 用法)、`AGENTS.md`(结构树补两个 GUI 文件)

@@ -325,11 +325,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def bring_to_front(root: tk.Tk) -> None:
+    """把窗口提到最前。
+
+    从终端启动时新窗口常常被终端挡住，用户会以为「没反应」；这里短暂置顶并抢焦点，
+    800ms 后取消置顶，避免一直压住其它窗口。
+    """
+    root.lift()
+    root.focus_force()
+    root.attributes("-topmost", True)
+    root.after(800, lambda: root.attributes("-topmost", False))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = tk.Tk()
     app = ClientApp(root, args.host, args.port, args.name)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
+    bring_to_front(root)
     root.mainloop()
     return 0
 
