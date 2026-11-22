@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-23 03:36 · T1 · 服务器端口输入框与实际监听端口同步
+- 目标: 用户反馈「服务器控制台上端的端口与实际地址端口不同步」——地址栏显示 `127.0.0.1:50380`，但端口输入框仍是 `0`
+- 改动: `src/task1_socket_chat/gui_server.py`(保存 `host_entry`/`port_entry` 引用；`start_server()` 成功后 `self.port_var.set(str(bound_port))` 并把两个输入框置为 DISABLED；`stop_server()` 恢复 NORMAL 且保留端口值，便于用同一地址重启)、`tests/test_gui.py`(断言 `port_var` 等于真实端口、运行中两个输入框 disabled、停止后恢复可编辑且端口保留)、`src/task1_socket_chat/README.md`(端口自动分配流程补「回填 + 锁定 + 停止后恢复」)
+- 验证: `Anaconda3\python.exe -m unittest tests.test_gui -v` → `Ran 9 tests` `OK`；`Anaconda3\python.exe -m unittest discover -s tests` → `Ran 74 tests in 5.165s` `OK`（exit 0）；3.14 同样 `Ran 74 tests ... OK`；重跑 `logs/_shot_server.py`（端口 0）→ `saved ... gui-server.png`，截图端口框为 `57900`、状态栏 `监听 127.0.0.1:57900`、地址栏 `127.0.0.1:57900`，三处一致
+- 决策: 创建后把输入框改成真实端口而不是继续显示 0，因为界面元素互相矛盾时用户无法判断该抄哪个；运行中锁定输入框，避免「改了端口却没生效」的误解；停止后保留端口，方便原地址重启让客户端不用改配置
+- 问题: 无
+- 下一步: 无（GUI 功能收尾）
+
 ## 2026-11-23 03:26 · T1 · 兼容 Python 3.7（Anaconda），放弃折腾解释器配置
 - 目标: 用户说「改不了就不改了，你把代码替换成其他版本能兼容的语句就行」——不再修改 PyCharm 解释器配置，改为让代码本身能在 Anaconda 3.7.0 上运行
 - 改动: `src/task1_socket_chat/protocol.py`(去掉 `from typing import Final` 及 3 处 `: Final`；`@dataclass` 去掉 `slots=True`)、`src/task1_socket_chat/config.py`(3 处 `@dataclass(slots=True, frozen=True)` → `@dataclass(frozen=True)`)、`tools/devlog.py`(`pending_required_fields` 里的赋值表达式 `:=` 改成普通循环)、`src/task1_socket_chat/README.md`(§4.5.1 改为「3.7+ 均可」并说明兼容手段)、`AGENTS.md`(§4.1 Python 版本要求改为 3.7+，列出禁用语法)

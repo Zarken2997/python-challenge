@@ -71,6 +71,10 @@ class GuiWindowTests(unittest.TestCase):
         self.assertGreater(port, 0)
         self.assertIn(str(port), app.status_var.get())
         self.assertIn(f"127.0.0.1:{port}", app.address_var.get())
+        # 端口输入框要同步成真实端口，不能在界面上仍显示 0
+        self.assertEqual(app.port_var.get(), str(port))
+        self.assertTrue(app.port_entry.instate(["disabled"]))
+        self.assertTrue(app.host_entry.instate(["disabled"]))
         self.assertEqual(app.start_server(), port)  # 重复点「创建聊天室」应返回同一端口，不重开服务
         self.assertTrue(app.copy_button.instate(["!disabled"]))
         app.copy_address()
@@ -79,6 +83,9 @@ class GuiWindowTests(unittest.TestCase):
         self.assertIsNone(app.server)
         self.assertEqual(app.status_var.get(), "未启动")
         self.assertIn("（启动后自动分配", app.address_var.get())
+        # 停止后输入框恢复可编辑，保留刚用过的端口便于原地址重启
+        self.assertTrue(app.port_entry.instate(["!disabled"]))
+        self.assertEqual(app.port_var.get(), str(port))
 
     def test_client_window_builds(self) -> None:
         app = gui_client.ClientApp(self.root, "127.0.0.1", 9000, "alice")

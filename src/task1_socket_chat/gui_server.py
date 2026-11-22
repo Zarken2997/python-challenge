@@ -116,9 +116,11 @@ class ServerApp:
         toolbar = ttk.Frame(self.root, padding=(10, 8))
         toolbar.pack(side=tk.TOP, fill=tk.X)
         ttk.Label(toolbar, text="监听地址").pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.host_var, width=14).pack(side=tk.LEFT, padx=(4, 12))
+        self.host_entry = ttk.Entry(toolbar, textvariable=self.host_var, width=14)
+        self.host_entry.pack(side=tk.LEFT, padx=(4, 12))
         ttk.Label(toolbar, text="端口（0 = 自动）").pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.port_var, width=7).pack(side=tk.LEFT, padx=(4, 12))
+        self.port_entry = ttk.Entry(toolbar, textvariable=self.port_var, width=7)
+        self.port_entry.pack(side=tk.LEFT, padx=(4, 12))
         self.start_button = ttk.Button(toolbar, text="创建聊天室", command=self.start_server)
         self.start_button.pack(side=tk.LEFT)
         self.stop_button = ttk.Button(toolbar, text="停止服务", command=self.stop_server, state=tk.DISABLED)
@@ -225,6 +227,10 @@ class ServerApp:
         self.server = server
         self._bound_port = bound_port
         auto_note = "（端口由系统自动分配）" if port == 0 else ""
+        # 把输入框里的 0 换成真实端口：否则上方写着 0、下面地址写着 50380，看起来像「不同步」
+        self.port_var.set(str(bound_port))
+        self.host_entry.config(state=tk.DISABLED)
+        self.port_entry.config(state=tk.DISABLED)
         self.status_var.set(f"监听 {bound_host}:{bound_port}")
         self._connect_address = f"{bound_host}:{bound_port}"
         self.address_var.set(display_address(bound_host, bound_port))
@@ -240,6 +246,8 @@ class ServerApp:
             server.shutdown()
             self._append("* 服务器已停止，所有客户端连接已关闭", "notice")
         self.status_var.set("未启动")
+        self.host_entry.config(state=tk.NORMAL)
+        self.port_entry.config(state=tk.NORMAL)
         self.address_var.set("（启动后自动分配并显示端口）")
         self._connect_address = ""
         self._bound_port = None
