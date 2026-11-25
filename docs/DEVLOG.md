@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 11:02 · META · 安装器拒绝装入非空外来目录，重建安装包
+- 目标: 堵住「误把项目目录当安装目录」的残余风险——只要标记写进别人的目录，卸载时该目录就会被递归删除
+- 改动: `setupkit/installer.py` 的 `install()` 增加护栏：目标目录已存在、内容非空、且不是本程序旧安装目录（`looks_like_install_dir` 为假）时直接拒绝，提示换空目录或使用默认 `%LOCALAPPDATA%\Programs\PythonChatClient`；`tests/test_setupkit.py` 新增 2 项（非空外来目录被拒且不写入标记、旧安装目录允许覆盖升级）；重新执行 `python setupkit\build.py` 生成新 exe
+- 验证: `python -m unittest tests.test_setupkit -v` → `Ran 25 tests` `OK`；演示 `logs\demo-project`（内含 `important.txt`）→ 卸载器输出「目标目录不像本程序的安装目录（缺少 install-info.txt 或两个 exe），已拒绝卸载」exit 1，安装器输出「安装目录不是空的，也不是本程序的旧安装目录，已拒绝」exit 1，目录与 `important.txt` 均保留；全新安装→卸载 `logs\install-test2` → 「已复制 2 个文件」「已登记卸载项」→「已删除用户数据目录」「已删除安装目录」「卸载完成，未发现残留」，目录与注册表键均 `False`；两版解释器全量 `Ran 122 tests` `OK`
+- 决策: 拒绝而不是「自动跳过删除」，因为静默跳过会让用户以为装好了、实际卸载残留；显式失败 + 提示默认目录更利于课堂环境排错
+- 问题: 仍有一个边界：若用户自己往「安装目录」里放文件（标记之外的），卸载会连这些文件一起删——这是「安装目录归程序所有」的常规约定，文档里已写明
+- 下一步: 用户桌面双击新版 `dist\ChatClientSetup.exe` 验证真实安装（向导默认目录 + 快捷方式 + 启动），再用开始菜单卸载项确认清理干净
+
 ## 2026-11-25 10:54 · T1 · 重新生成安装包并验证安装/卸载链路
 - 目标: 重建被误删的 `dist/` 安装包，并确认「安装 → 卸载」链路能装得上、卸得干净、且卸载器不会误删别的目录
 - 改动: 新建 `.venv-pack`（Python 3.14.3）并用 `logs\_manual_wheels.py` 手工解包 PyInstaller 6.22.3 与依赖（pip 在本机会卡住）；`python setupkit\build.py` 重新产出 `dist\ChatClient.exe`(11.9 MB)、`dist\Uninstall.exe`(11.82 MB)、`dist\ChatClientSetup.exe`(35.05 MB) 与 `dist\app\`；`setupkit/` 源码未改（仍含 `install-info.txt` 标记与 `looks_like_install_dir` 护栏）

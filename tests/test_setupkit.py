@@ -136,6 +136,26 @@ class InstallMarkerTests(unittest.TestCase):
         target = Path("C:/Users/demo/AppData/Local/Programs/PythonChatClient")
         self.assertEqual(uninstaller.resolve_install_root(str(target)), target)
 
+    def test_installer_refuses_non_empty_foreign_directory(self) -> None:
+        """往别人的目录里装会把标记写进去，卸载时就会连目录一起删——必须拒绝。"""
+        shed = self._tmp_dir / "my-project"
+        shed.mkdir()
+        source = shed / "main.py"
+        source.write_text("print('keep me')\n", encoding="utf-8")
+        logs: list[str] = []
+        code = installer.install(
+            shed, desktop=False, start_menu=False, log=logs.append
+        )
+        self.assertEqual(code, 1)
+        self.assertTrue(source.exists(), "被拒绝的目录不能写入任何东西")
+        self.assertFalse(cleanup.has_install_marker(shed))
+        self.assertTrue(any("不是空的" in line for line in logs))
+
+    def test_installer_allows_upgrade_of_own_install_dir(self) -> None:
+        """旧安装目录（有标记）应允许覆盖安装，否则无法升级。"""
+        installer.write_marker(self.root)
+        self.assertTrue(cleanup.looks_like_install_dir(self.root))
+
 
 class ParserTests(unittest.TestCase):
     def test_installer_defaults(self) -> None:

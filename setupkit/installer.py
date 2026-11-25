@@ -103,6 +103,17 @@ def install(
     if not cleanup.is_safe_install_root(install_root):
         log("! 安装目录不安全，已拒绝: {}".format(install_root))
         return 1
+    if install_root.exists() and not cleanup.looks_like_install_dir(install_root):
+        # 往别人的目录里装会把标记写进去，卸载时就会连那个目录一起删——宁可拒绝。
+        try:
+            occupied = any(install_root.iterdir())
+        except OSError as exc:
+            log("! 无法读取安装目录: {}".format(exc))
+            return 1
+        if occupied:
+            log("! 安装目录不是空的，也不是本程序的旧安装目录，已拒绝: {}".format(install_root))
+            log("  请换一个空目录，或使用默认目录: {}".format(app_meta.install_dir()))
+            return 1
     try:
         written = copy_payload(install_root)
     except (OSError, FileNotFoundError) as exc:
