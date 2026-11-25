@@ -67,6 +67,10 @@ dist\ChatClientSetup.exe --silent --dir "D:\Tools\PythonChatClient" --no-desktop
    （`UninstallString` = `"<目录>\Uninstall.exe" --uninstall`）；
 6. 写安装清单 `install-manifest.json`（文件列表、快捷方式及目标、注册表值、数据目录）。
 
+> **安装包是「一次性」的**：清单、注册表、快捷方式里没有任何一条记录 `ChatClientSetup.exe`
+> 的路径，所以装完就可以把安装包删掉或移走，不影响已安装的程序，也不会留下指向它的引用。
+> 要卸载时用安装目录里的 `Uninstall.exe`（或「设置 → 应用」），它会按清单把东西清干净。
+
 ## 4. 卸载（重点：卸载干净）
 
 三种入口，效果一致：
