@@ -149,12 +149,26 @@ class InstallMarkerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(source.exists(), "被拒绝的目录不能写入任何东西")
         self.assertFalse(cleanup.has_install_marker(shed))
-        self.assertTrue(any("不是空的" in line for line in logs))
+        self.assertTrue(any("已有其它文件" in line for line in logs))
+        self.assertTrue(any("main.py" in line for line in logs))
 
     def test_installer_allows_upgrade_of_own_install_dir(self) -> None:
         """旧安装目录（有标记）应允许覆盖安装，否则无法升级。"""
         installer.write_marker(self.root)
         self.assertTrue(cleanup.looks_like_install_dir(self.root))
+
+    def test_foreign_entries_ignores_own_artifacts(self) -> None:
+        """只有安装包自己（或已装好的产物）时不算「外来文件」。"""
+        for name in (app_meta.SETUP_EXE, app_meta.CLIENT_EXE, app_meta.INSTALL_MARKER):
+            (self.root / name).write_bytes(b"stub")
+        self.assertEqual(installer.foreign_entries(self.root), [])
+
+    def test_foreign_entries_reports_user_files(self) -> None:
+        (self.root / app_meta.SETUP_EXE).write_bytes(b"stub")
+        keep = self.root / "报告.docx"
+        keep.write_bytes(b"user data")
+        names = [path.name for path in installer.foreign_entries(self.root)]
+        self.assertEqual(names, ["报告.docx"])
 
 
 class ParserTests(unittest.TestCase):

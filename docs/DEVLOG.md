@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 11:11 · META · 安装器放行「目录里只有安装包本身」并显示真实失败原因
+- 目标: 修掉上一版护栏的误伤——用户把 `ChatClientSetup.exe` 放在 `F:\codex,ultilize\测试` 并选该目录安装，被「目录不是空的」挡下，且弹窗只说「请检查目录权限」，看不出真实原因
+- 改动: `setupkit/installer.py` 新增 `foreign_entries(install_root)`，把 `ChatClient.exe`/`Uninstall.exe`/`install-info.txt`/`ChatClientSetup.exe` 和正在运行的安装包自身排除，只统计真正的外来文件；`install()` 改为仅在有外来文件时拒绝并列出冲突文件名；`run_gui.do_install()` 收集 `install()` 的日志行、把最后一条 `!` 原因写进状态栏与弹窗，并把整段日志追加到 `%TEMP%\PythonChatClient-setup.log`；`tests/test_setupkit.py` 增 2 项（外来文件识别、用户文件被拒且日志点名 `main.py`）
+- 验证: `python -m unittest tests.test_setupkit` → `Ran 27 tests` `OK`；复现场景 `logs\测试`（只含 `ChatClientSetup.exe`）→ 「已复制 2 个文件」「已登记卸载项」exit 0，目录内 `ChatClient.exe`/`Uninstall.exe`/`install-info.txt` 齐全，随后卸载「已删除安装目录」「卸载完成，未发现残留」，目录消失；两版解释器全量 `Ran 124 tests` `OK`；重新打包 `dist\ChatClient.exe`/`Uninstall.exe`/`ChatClientSetup.exe`（11:11:21–11:11:34）
+- 决策: 用「白名单式外来文件判断」而不是「目录必须为空」，因为用户把安装包放在同一目录再安装是最自然的用法；同时保留拦截用户文件的语义——那种目录卸载时会被整个删掉
+- 问题: 目录里若同时有安装包和用户自己的文件，仍会被拒绝并列出冲突文件；弹窗现在会说明是哪个文件
+- 下一步: 用户用新版 `dist\ChatClientSetup.exe` 重试安装（可以直接选 `F:\codex,ultilize\测试`），确认能装完并启动客户端
+
 ## 2026-11-25 11:02 · META · 安装器拒绝装入非空外来目录，重建安装包
 - 目标: 堵住「误把项目目录当安装目录」的残余风险——只要标记写进别人的目录，卸载时该目录就会被递归删除
 - 改动: `setupkit/installer.py` 的 `install()` 增加护栏：目标目录已存在、内容非空、且不是本程序旧安装目录（`looks_like_install_dir` 为假）时直接拒绝，提示换空目录或使用默认 `%LOCALAPPDATA%\Programs\PythonChatClient`；`tests/test_setupkit.py` 新增 2 项（非空外来目录被拒且不写入标记、旧安装目录允许覆盖升级）；重新执行 `python setupkit\build.py` 生成新 exe

@@ -31,6 +31,40 @@ def payload_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "dist" / "app"
 
 
+def foreign_entries(install_root: Path) -> list[Path]:
+    """目录里「不是本程序产物」的条目。
+
+    用户最常见的操作是把 `ChatClientSetup.exe` 下载到某个文件夹、然后直接把它选作
+    安装目录；这时目录非空，但里面只有安装包自己，应该放行。真正需要拒绝的是
+    目录里躺着用户自己的文件——那种目录一旦被当安装目录，卸载时会被整个删掉。
+    """
+    own_names = {
+        app_meta.CLIENT_EXE.lower(),
+        app_meta.UNINSTALL_EXE.lower(),
+        app_meta.INSTALL_MARKER.lower(),
+        app_meta.SETUP_EXE.lower(),
+    }
+    running: Path | None = None
+    if getattr(sys, "frozen", False):
+        try:
+            running = Path(sys.executable).resolve()
+        except OSError:
+            running = None
+
+    foreign: list[Path] = []
+    for entry in install_root.iterdir():
+        if entry.name.lower() in own_names:
+            continue
+        if running is not None:
+            try:
+                if entry.resolve() == running:
+                    continue
+            except OSError:
+                pass
+        foreign.append(entry)
+    return foreign
+
+
 def copy_payload(install_root: Path) -> list[Path]:
     """复制可执行文件，返回实际写入的路径；缺文件抛 FileNotFoundError。"""
     source = payload_dir()
@@ -106,12 +140,15 @@ def install(
     if install_root.exists() and not cleanup.looks_like_install_dir(install_root):
         # 往别人的目录里装会把标记写进去，卸载时就会连那个目录一起删——宁可拒绝。
         try:
-            occupied = any(install_root.iterdir())
+            foreign = foreign_entries(install_root)
         except OSError as exc:
             log("! 无法读取安装目录: {}".format(exc))
             return 1
-        if occupied:
-            log("! 安装目录不是空的，也不是本程序的旧安装目录，已拒绝: {}".format(install_root))
+        if foreign:
+            sample = "、".join(item.name for item in foreign[:5])
+            more = "" if len(foreign) <= 5 else " 等 {} 项".format(len(foreign))
+            log("! 安装目录里已有其它文件，已拒绝: {}".format(install_root))
+            log("  冲突文件: {}{}".format(sample, more))
             log("  请换一个空目录，或使用默认目录: {}".format(app_meta.install_dir()))
             return 1
     try:
@@ -207,11 +244,26 @@ def run_gui(default_dir: Path, run_after: bool = False) -> int:
         status.set("正在安装…")
         install_button.config(state=tk.DISABLED)
         root.update_idletasks()
-        code = install(target, desktop=desktop_var.get(), start_menu=startmenu_var.get())
+        lines: list[str] = []
+        code = install(
+            target,
+            desktop=desktop_var.get(),
+            start_menu=startmenu_var.get(),
+            log=lines.append,
+        )
+        if lines:
+            diag.log("\n".join(lines))
         if code != 0:
-            status.set("安装失败，详见提示")
+            reason = next(
+                (line.lstrip("! ").strip() for line in reversed(lines) if line.strip().startswith("!")),
+                "安装未完成。",
+            )
+            status.set("安装失败：" + reason)
             install_button.config(state=tk.NORMAL)
-            messagebox.showerror("安装失败", "安装未完成，请检查目录权限后重试。")
+            messagebox.showerror(
+                "安装失败",
+                "{}\n\n日志：\n{}".format(reason, diag.log_path()),
+            )
             return
         status.set("安装完成")
         if messagebox.askyesno("安装完成", "已安装到：\n{}\n\n现在启动客户端吗？".format(target)):
