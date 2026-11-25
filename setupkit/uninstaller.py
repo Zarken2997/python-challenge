@@ -1,13 +1,19 @@
-"""卸载器：结束进程、删快捷方式、删数据目录、删安装目录、删注册表项，最后自删。
+"""卸载器：按安装清单逐项核验删除，最后以「临时副本」方式删掉自己和安装目录。
 
-「卸载干净」的标准写在 `cleanup.removal_plan()` 里：快捷方式 + %APPDATA% 数据 + 安装目录 +
-HKCU 卸载项，一样不留。卸载器自己就在安装目录里，所以最后一步要交给一个延迟执行的
-批处理去删目录和它自己（Windows 不允许删除正在运行的可执行文件）。
+三条主流做法都在这里落地：
+
+1. **清单驱动**：只删安装器写在 `install-manifest.json` 里的文件、快捷方式和注册表值；
+   清单之外的陌生文件保留并提示（MSI 的 Component 表、Inno Setup 的 unins000.dat 同理）。
+2. **删前验明身份**：快捷方式读出 `TargetPath` 并比对，注册表核对 `DisplayName` /
+   `InstallLocation`，对不上一律跳过。
+3. **临时副本自删**：运行中的 exe 删不掉自己，所以把自己复制到 `%TEMP%` 再以副本身份
+   收尾——副本等原进程退出后删掉安装目录，最后删自己。这比「批处理里 rmdir」可靠。
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import shutil
 import subprocess
@@ -20,14 +26,17 @@ if __package__ in (None, ""):  # 允许直接 `python setupkit\\uninstaller.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "setupkit"
 
-from . import app_meta, cleanup, diag, registry_ops, shortcuts  # noqa: E402
+from . import app_meta, cleanup, diag, manifest, registry_ops, shortcuts  # noqa: E402
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x00000102
+
 
 def running_exe() -> Path:
-    """当前进程对应的可执行文件（打包后是 Uninstall.exe）。"""
+    """当前进程对应的可执行文件（打包后是 Uninstall.exe / ChatClientSetup.exe）。"""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve()
     return Path(__file__).resolve()
@@ -73,49 +82,147 @@ def _clear_readonly(path: Path) -> None:
             continue
 
 
-def remove_shortcuts(install_root: Path, log=print) -> list[Path]:
-    """删除安装器创建过的快捷方式，返回没有删掉的路径。"""
-    failures = []
-    for link in cleanup.shortcut_files(
-        install_root, app_meta.desktop_dir(), app_meta.start_menu_dir()
-    ):
+def expected_shortcuts(install_root: Path) -> list[tuple[Path, Path]]:
+    """没有清单的旧版安装：按固定命名推算三个快捷方式及其期望目标。"""
+    desktop = app_meta.desktop_dir()
+    start_menu = app_meta.start_menu_dir()
+    folder = start_menu / app_meta.START_MENU_FOLDER
+    return [
+        (desktop / app_meta.client_shortcut_name(), app_meta.exe_path(install_root)),
+        (folder / app_meta.client_shortcut_name(), app_meta.exe_path(install_root)),
+        (folder / app_meta.uninstall_shortcut_name(), app_meta.uninstaller_path(install_root)),
+    ]
+
+
+def remove_shortcuts(install_root: Path, entries: list[tuple[Path, Path]] | None, log=print) -> list[Path]:
+    """删除快捷方式，删除前核对 .lnk 的目标；目标不符或读不出来就跳过。"""
+    failures: list[Path] = []
+    for link, expected in entries or expected_shortcuts(install_root):
+        actual = shortcuts.read_shortcut_target(link)
+        if actual is None:
+            continue  # 不存在（或读不出来）——不存在视为已清理
+        try:
+            matches = Path(actual).resolve() == Path(expected).resolve()
+        except OSError:
+            matches = False
+        if not matches:
+            log("* 跳过快捷方式（目标不是本程序）: {} → {}".format(link, actual))
+            continue
         if not shortcuts.remove_shortcut(link):
             failures.append(link)
     shortcuts.remove_empty_dir(app_meta.start_menu_dir() / app_meta.START_MENU_FOLDER)
     return failures
 
 
-def self_delete_script(install_root: Path) -> str:
-    """延迟批处理的正文：等卸载器退出 → 反复尝试删安装目录 → 删批处理自己。
+def remaining_unknown(install_root: Path, self_path: Path | None = None) -> list[Path]:
+    """安装目录里清单之外的东西（自删模式下把自己的 exe 排除）。"""
+    root = Path(install_root)
+    if not root.exists():
+        return []
+    own = {
+        app_meta.CLIENT_EXE.lower(),
+        app_meta.UNINSTALL_EXE.lower(),
+        app_meta.INSTALL_MARKER.lower(),
+        manifest.MANIFEST_NAME.lower(),
+    }
+    unknown: list[Path] = []
+    for entry in root.iterdir():
+        if entry.name.lower() in own:
+            continue
+        if self_path is not None:
+            try:
+                if entry.resolve() == Path(self_path).resolve():
+                    continue
+            except OSError:
+                pass
+        unknown.append(entry)
+    return unknown
 
-    卸载器自己是删不掉自己的（exe 正在运行），只能交给外部进程。这里做 15 次重试，
-    因为杀软扫描、资源管理器占用都可能让第一次 `rmdir` 失败；失败原因写进
-    `%TEMP%\\python-chat-client-uninstall.log`，方便排查「为什么文件夹还在」。
-    """
-    return (
-        "@echo off\r\n"
-        "for /L %%i in (1,1,15) do (\r\n"
-        '  if not exist "{0}" goto done\r\n'
-        "  timeout /t 1 /nobreak > nul\r\n"
-        '  rmdir /s /q "{0}" >> "%TEMP%\\python-chat-client-uninstall.log" 2>&1\r\n'
-        ")\r\n"
-        ":done\r\n"
-        'del "%~f0"\r\n'
-    ).format(install_root)
+
+def wait_for_process_exit(pid: int, timeout: float = 30.0) -> None:
+    """等指定进程退出（临时副本用它等原卸载器释放文件）。"""
+    if pid <= 0:
+        return
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+    if not handle:
+        return
+    try:
+        kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+    finally:
+        kernel32.CloseHandle(handle)
 
 
-def schedule_self_delete(install_root: Path) -> Path:
-    """把自删批处理写到临时目录并以脱离方式启动。"""
-    path = Path(tempfile.gettempdir()) / "python-chat-client-uninstall-{}.cmd".format(os.getpid())
-    with open(str(path), "w", encoding="utf-8", newline="\r\n") as handle:
-        handle.write(self_delete_script(install_root))
-    subprocess.Popen(
-        ["cmd", "/c", str(path)],
-        creationflags=_DETACHED,
-        close_fds=True,
-        cwd=str(Path(tempfile.gettempdir())),
-    )
-    return path
+def spawn_temp_cleanup(install_root: Path, log=print) -> Path | None:
+    """把自己复制到 %TEMP% 并以 `--cleanup` 模式启动，用来删除安装目录和自身。"""
+    program = running_exe()
+    if not getattr(sys, "frozen", False):
+        return None  # 源码模式没有 exe 可复制，交给调用方直接删
+    temp_dir = Path(tempfile.gettempdir())
+    temp_exe = temp_dir / "python-chat-client-uninstall-{}.exe".format(os.getpid())
+    try:
+        shutil.copy2(program, temp_exe)
+    except OSError as exc:
+        log("! 无法创建临时卸载副本: {}".format(exc))
+        return None
+    try:
+        subprocess.Popen(
+            [str(temp_exe), "--cleanup", str(install_root), "--parent-pid", str(os.getpid())],
+            creationflags=_DETACHED,
+            close_fds=True,
+            cwd=str(temp_dir),
+        )
+    except OSError as exc:
+        log("! 无法启动临时卸载副本: {}".format(exc))
+        return None
+    return temp_exe
+
+
+def schedule_self_delete(path: Path) -> None:
+    """删除临时副本自己（cmd 延迟一点，避免文件仍被占用）。"""
+    script = 'ping -n 3 127.0.0.1 > nul & del /f /q "{}"'.format(path)
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", script],
+            creationflags=_DETACHED,
+            close_fds=True,
+            cwd=str(Path(tempfile.gettempdir())),
+        )
+    except OSError:
+        return
+
+
+def cleanup_after_exit(install_root: Path, parent_pid: int, log=print) -> int:
+    """临时副本的收尾：等原卸载器退出 → 删安装目录 → 删自己。"""
+    wait_for_process_exit(parent_pid)
+    remove_tree(install_root / app_meta.UNINSTALL_EXE, log)
+    for name in (app_meta.INSTALL_MARKER, manifest.MANIFEST_NAME):
+        try:
+            (install_root / name).unlink()
+        except OSError:
+            pass
+    for artifact in cleanup.runtime_artifacts(install_root):
+        if artifact.is_dir():
+            remove_tree(artifact, log)
+        else:
+            try:
+                artifact.unlink()
+            except OSError:
+                pass
+    if install_root.exists():
+        unknown = [item for item in install_root.iterdir()]
+        if unknown:
+            log("* 安装目录里还有清单之外的文件，保留: {}".format(install_root))
+            log("  {}".format("、".join(item.name for item in unknown[:5])))
+        else:
+            try:
+                install_root.rmdir()
+                log("* 已删除安装目录: {}".format(install_root))
+            except OSError as exc:
+                log("! 删除安装目录失败: {}".format(exc))
+    if getattr(sys, "frozen", False):
+        schedule_self_delete(running_exe())
+    return 0
 
 
 def leftovers(install_root: Path, data_root: Path, desktop: Path, start_menu: Path) -> list[str]:
@@ -124,7 +231,7 @@ def leftovers(install_root: Path, data_root: Path, desktop: Path, start_menu: Pa
     for path in cleanup.removal_plan(install_root, data_root, desktop, start_menu):
         if path.exists():
             remaining.append(str(path))
-    if registry_ops.read_values():
+    if registry_ops.matches_install(install_root):
         remaining.append("HKCU\\{}".format(app_meta.UNINSTALL_KEY))
     return remaining
 
@@ -135,41 +242,60 @@ def uninstall(
     log=print,
     inside_running_dir: bool | None = None,
 ) -> int:
-    """执行卸载；返回 0 表示成功（含「已安排自删」），1 表示仍有残留。"""
-    data_root = app_meta.data_dir()
-    desktop = app_meta.desktop_dir()
-    start_menu = app_meta.start_menu_dir()
-
+    """执行卸载；返回 0 表示成功（含「已交给临时副本收尾」），1 表示仍有残留。"""
+    install_root = Path(install_root)
+    data_from_manifest = None
     if not cleanup.is_safe_install_root(install_root):
         log("! 安装目录不安全，已拒绝卸载: {}".format(install_root))
         return 1
 
     if not cleanup.looks_like_install_dir(install_root):
-        # 这是本代理误删事件的直接教训：没有安装标记的目录一律不删。
+        # 这是本代理误删事件的直接教训：没有清单/标记的目录一律不删。
         log("! 目标目录不像本程序的安装目录（缺少 {} 或两个 exe），已拒绝卸载: {}".format(
-            app_meta.INSTALL_MARKER, install_root
+            manifest.MANIFEST_NAME, install_root
         ))
         log("  如确认要卸载，请用 --dir 指向真正的安装目录（{}）。".format(app_meta.install_dir()))
         return 1
 
+    data = manifest.read_manifest(install_root)
+    shortcuts_list = manifest.shortcut_entries(data) if data else None
+    if data:
+        data_from_manifest = manifest.data_dir_of(data)
+
     kill_running_client(log)
 
-    for link in remove_shortcuts(install_root, log):
+    for link in remove_shortcuts(install_root, shortcuts_list, log):
         log("! 快捷方式没删掉: {}".format(link))
 
     if keep_data:
-        log("* 保留用户数据目录（按 --keep-data）: {}".format(data_root))
-    elif remove_tree(data_root, log):
-        log("* 已删除用户数据目录: {}".format(data_root))
+        log("* 保留用户数据目录（按 --keep-data）: {}".format(app_meta.data_dir()))
     else:
-        log("! 用户数据目录删除不完整: {}".format(data_root))
+        data_root = data_from_manifest or app_meta.data_dir()
+        if remove_tree(data_root, log):
+            log("* 已删除用户数据目录: {}".format(data_root))
+        else:
+            log("! 用户数据目录删除不完整: {}".format(data_root))
 
     if inside_running_dir is None:
-        exe_dir = running_exe().parent
-        inside_running_dir = cleanup.is_inside(exe_dir, install_root)
+        inside_running_dir = cleanup.is_inside(running_exe().parent, install_root)
 
-    if inside_running_dir:
-        # 卸载器自己在安装目录里：先删掉除自身之外的其它东西，再交给批处理收尾
+    # ---- 文件：清单驱动；没有清单时退回「旧版：除自己之外都删」 ----
+    if data:
+        files = manifest.listed_files(data, install_root)
+        removed = 0
+        for path in files:
+            if not path.exists():
+                continue
+            try:
+                if path.is_dir():
+                    remove_tree(path, log)
+                else:
+                    path.unlink()
+                removed += 1
+            except OSError as exc:
+                log("! 删除失败 {}: {}".format(path, exc))
+        log("* 已按清单删除 {} 个文件/目录".format(removed))
+    else:
         current = running_exe()
         for child in install_root.iterdir():
             try:
@@ -185,21 +311,42 @@ def uninstall(
                     child.unlink()
                 except OSError as exc:
                     log("! 删除失败 {}: {}".format(child, exc))
-        registry_ops.delete_uninstall_key()
-        schedule_self_delete(install_root)
-        log("* 已安排删除安装目录: {}（本窗口关闭后约 3 秒完成）".format(install_root))
-        return 0
+        log("* 旧版安装（无清单）：已删除安装目录内除卸载器外的内容")
 
+    for artifact in cleanup.runtime_artifacts(install_root):
+        if artifact.is_dir():
+            remove_tree(artifact, log)
+        else:
+            try:
+                artifact.unlink()
+            except OSError:
+                pass
+
+    # ---- 注册表：核对身份后再删 ----
+    if data:
+        if registry_ops.matches_install(install_root):
+            registry_ops.delete_uninstall_key()
+            log("* 已删除卸载注册表项")
+        elif registry_ops.read_values():
+            log("* 跳过注册表项（DisplayName/InstallLocation 与本程序不符）")
+    else:
+        registry_ops.delete_uninstall_key()
+
+    if inside_running_dir:
+        temp_exe = spawn_temp_cleanup(install_root, log)
+        if temp_exe is not None:
+            log("* 已交给临时副本收尾，安装目录稍后会被删除")
+            return 0
+
+    unknown = remaining_unknown(install_root, running_exe())
+    if unknown:
+        log("* 安装目录里还有清单之外的文件，保留: {}".format(install_root))
+        log("  {}".format("、".join(item.name for item in unknown[:5])))
+        return 0
     if remove_tree(install_root, log):
         log("* 已删除安装目录: {}".format(install_root))
     else:
         log("! 安装目录删除不完整: {}".format(install_root))
-
-    registry_ops.delete_uninstall_key()
-    remaining = leftovers(install_root, data_root, desktop, start_menu)
-    if remaining:
-        for item in remaining:
-            log("! 仍有残留: {}".format(item))
         return 1
     log("* 卸载完成，未发现残留")
     return 0
@@ -214,7 +361,7 @@ def run_gui(install_root: Path, keep_data: bool) -> int:
 
     root = tk.Tk()
     root.title("卸载 {}".format(app_meta.DISPLAY_NAME))
-    root.geometry("580x280+220+180")
+    root.geometry("580x300+220+180")
     root.resizable(False, False)
 
     ttk.Label(
@@ -223,7 +370,10 @@ def run_gui(install_root: Path, keep_data: bool) -> int:
     ttk.Label(root, text="安装目录：{}".format(install_root), wraplength=540).pack(anchor=tk.W, padx=18)
     ttk.Label(
         root,
-        text="将删除：程序文件、桌面与开始菜单快捷方式、用户配置与日志，以及「设置 → 应用」里的卸载项。",
+        text=(
+            "将按安装清单删除：程序文件、快捷方式、用户配置与日志、注册表卸载项；"
+            "清单之外的陌生文件会保留。"
+        ),
         wraplength=540,
         foreground="#8a4b08",
     ).pack(anchor=tk.W, padx=18, pady=(8, 0))
@@ -240,28 +390,35 @@ def run_gui(install_root: Path, keep_data: bool) -> int:
     buttons.pack(fill=tk.X, padx=18, pady=14)
     confirm = ttk.Button(buttons, text="确认卸载")
 
+    lines: list[str] = []
+
     def do_uninstall() -> None:
         if not messagebox.askyesno("确认卸载", "确定要卸载 {} 吗？".format(app_meta.DISPLAY_NAME)):
             return
         confirm.config(state=tk.DISABLED)
         status.set("正在卸载…")
         root.update_idletasks()
-        code = uninstall(install_root, keep_data=keep_var.get())
+        del lines[:]
+        code = uninstall(install_root, keep_data=keep_var.get(), log=lines.append)
+        if lines:
+            diag.log("\n".join(lines))
         if code == 0:
             note = ""
             if install_root.exists():
                 note = (
-                    "\n\n安装目录里现在只剩卸载器自己（正在运行，删不掉自己），"
-                    "其它文件、快捷方式、注册表项和用户数据都已在本次清理中删除。"
-                    "\n它会尝试自动删除该文件夹；如果几秒后文件夹还在，"
-                    "直接把该文件夹（或里面的 Uninstall.exe）拖进回收站即可，不会再有残留。"
+                    "\n\n已按安装清单清理完毕；安装目录里剩下的内容不在清单里（或只剩卸载器自己），"
+                    "确认无误后可直接拖进回收站。"
                 )
             messagebox.showinfo("卸载完成", "已卸载并清理干净。" + note)
             root.destroy()
         else:
+            reason = next(
+                (line.lstrip("! ").strip() for line in reversed(lines) if line.strip().startswith("!")),
+                "仍有残留。",
+            )
             status.set("卸载未完全成功")
             confirm.config(state=tk.NORMAL)
-            messagebox.showwarning("卸载未完成", "仍有文件残留，请查看提示后重试或手动删除。")
+            messagebox.showwarning("卸载未完成", "{}\n\n请查看日志后重试。".format(reason))
 
     confirm.config(command=do_uninstall)
     confirm.pack(side=tk.RIGHT)
@@ -273,8 +430,10 @@ def run_gui(install_root: Path, keep_data: bool) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="卸载 {}".format(app_meta.DISPLAY_NAME))
     parser.add_argument("--silent", action="store_true", help="不显示界面，直接卸载")
-    parser.add_argument("--dir", default="", help="安装目录（默认从注册表读取）")
+    parser.add_argument("--dir", default="", help="安装目录（默认从注册表或清单读取）")
     parser.add_argument("--keep-data", action="store_true", help="保留 %%APPDATA%% 下的用户配置")
+    parser.add_argument("--cleanup", default="", help=argparse.SUPPRESS)  # 临时副本内部使用
+    parser.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     return parser
 
 
@@ -312,6 +471,8 @@ def show_error(title: str, message: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cleanup:
+        return cleanup_after_exit(Path(args.cleanup), args.parent_pid)
     install_root = resolve_install_root(args.dir)
     if install_root is None:
         print("! 找不到安装目录，请用 --dir 指定")

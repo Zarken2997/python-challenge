@@ -91,13 +91,34 @@ def has_install_marker(root: Path) -> bool:
 
 
 def looks_like_install_dir(root: Path) -> bool:
-    """目录像不像本程序的安装目录：有标记文件，或同时有客户端与卸载器两个 exe。"""
+    """目录像不像本程序的安装目录：有清单/标记文件，或同时有客户端与卸载器两个 exe。
+
+    清单（`install-manifest.json`）是主判据：它由安装器写下，记录了自己创建了哪些文件；
+    旧版安装没有清单，用 `install-info.txt` 标记或两个 exe 兜底，保证老安装也能卸载。
+    """
+    if manifest_present(root):
+        return True
     if has_install_marker(root):
         return True
     try:
         return app_meta.exe_path(root).is_file() and app_meta.uninstaller_path(root).is_file()
     except OSError:
         return False
+
+
+def manifest_present(root: Path) -> bool:
+    """安装目录里有没有本程序的清单文件（不看内容，避免与 manifest 模块循环导入）。"""
+    try:
+        return (Path(root) / "install-manifest.json").is_file()
+    except OSError:
+        return False
+
+
+def runtime_artifacts(install_root: Path) -> list[Path]:
+    """运行期产生、清单里不会记录的残留（客户端日志与配置）。"""
+    root = Path(install_root)
+    items = [root / name for name in app_meta.RUNTIME_ARTIFACTS]
+    return items
 
 
 def is_inside(child: Path, parent: Path) -> bool:

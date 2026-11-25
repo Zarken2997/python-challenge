@@ -1,4 +1,4 @@
-"""PyInstaller 打包入口：卸载器。"""
+"""源码模式入口：卸载（等价于 `python -m setupkit.app --uninstall`）。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from setupkit.uninstaller import main  # noqa: E402
+from setupkit.app import main  # noqa: E402
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(["--uninstall"] + sys.argv[1:]))

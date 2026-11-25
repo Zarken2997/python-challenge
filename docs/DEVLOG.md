@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 11:34 · T1 · 安装/卸载二合一：清单驱动与删除前身份核验
+- 目标: 按主流安装器做法改造 setupkit——安装与卸载合并成一个 exe，卸载只删自己装过的东西，并在删除前核验对象身份
+- 改动: 新增 `setupkit/manifest.py`（`install-manifest.json` 记录文件/快捷方式/注册表值/数据目录，`listed_files()` 拒绝 `..` 与绝对路径）与 `setupkit/app.py`（统一入口，`--uninstall` 切换卸载）；`installer.py` 增加 `install_self_as_uninstaller()`（把安装包自身复制成 `Uninstall.exe`）与清单写入，`make_shortcuts()` 返回创建清单，`foreign_entries()` 白名单放行 `install-manifest.json`；`uninstaller.py` 重写为清单驱动（`remove_shortcuts()` 用 `read_shortcut_target()` 核验目标、`matches_install()` 核验注册表、`spawn_temp_cleanup()` 复制自身到 `%TEMP%` 后 `wait_for_process_exit()` 收尾、清单外文件保留并列出）；`registry_ops.uninstall_values()` 的卸载命令改为 `"<目录>\Uninstall.exe" --uninstall`；`build.py` 只产出 `ChatClient.exe` 与 `ChatClientSetup.exe`；`tests/test_setupkit.py` 增加 `ManifestTests`、`UninstallFromManifestTests`、`AppParserTests`、`SelfDeleteTests`，共 35 项
+- 验证: `pythoncore-3.14-64\python.exe -m unittest tests.test_setupkit` → `Ran 35 tests` `OK`；两版解释器全量 `Ran 132 tests` `OK`（Anaconda 3.7.0 同样通过）；`.venv-pack\Scripts\python.exe setupkit\build.py` → `dist\ChatClientSetup.exe` 23.63 MB、`dist\ChatClient.exe` 11.9 MB；源码模式 `entry_installer.py --silent --dir logs\install-test --no-desktop --no-startmenu` → 复制 1 个文件、写 `install-info.txt` 与 `install-manifest.json`、登记 `HKCU\...\Uninstall\PythonChatClient`（`UninstallString` 含 `--uninstall`）；`entry_uninstaller.py --silent --dir logs\install-test --keep-data` → 按清单删除 1 个文件、删除注册表项、删除安装目录，`Test-Path` 为 False，`reg query` 返回「找不到」
+- 决策: 采用「清单 + 身份核验 + 临时副本自删」而不是整目录 `rmdir`，因为 MSI/Inno 都按安装记录回放删除；改成清单后，删的范围可审计，用户后来放进目录的文件不会被牵连
+- 问题: 首次跑测试 `FAILED (errors=2)`，`argparse` 报 `badly formed help string`——`--dir` 的帮助文字里写了 `%LOCALAPPDATA%`，被当成格式化占位符；改为 `%%LOCALAPPDATA%%` 后通过
+- 下一步: 在用户桌面环境双击 `dist\ChatClientSetup.exe` 实测安装/卸载（沙箱内 exe 无法启动），并考虑给卸载器加 `--dry-run` 预览删除清单
+
 ## 2026-11-25 11:21 · META · 卸载器自删改为重试并提示「拖回收站收尾」
 - 目标: 解决「卸载完成后安装目录里还剩一个 `Uninstall.exe`」的困惑，并让自删更可靠
 - 改动: `setupkit/uninstaller.py` 的 `self_delete_script()` 从「等 3 秒删一次」改为「最多 15 次、每次等 1 秒、目录不存在就提前结束」，删除输出写入 `%TEMP%\python-chat-client-uninstall.log`；`run_gui()` 在卸载成功但安装目录仍在时，弹窗明确说明「里面只剩卸载器自己，其它文件/快捷方式/注册表/用户数据已清，把该文件夹或 `Uninstall.exe` 拖进回收站即可」；`tests/test_setupkit.py` 增 1 项断言重试循环

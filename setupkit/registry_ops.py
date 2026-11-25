@@ -28,8 +28,8 @@ def uninstall_values(
         "Publisher": publisher,
         "DisplayIcon": str(exe),
         "InstallLocation": str(install_root),
-        "UninstallString": '"{}"'.format(uninstaller),
-        "QuietUninstallString": '"{}" --silent'.format(uninstaller),
+        "UninstallString": '"{}" --uninstall'.format(uninstaller),
+        "QuietUninstallString": '"{}" --uninstall --silent'.format(uninstaller),
         "InstallDate": install_date,
         "EstimatedSize": estimated_kb,
         "NoModify": 1,
@@ -85,3 +85,23 @@ def install_location(key_path: str = app_meta.UNINSTALL_KEY) -> Path | None:
     if isinstance(value, str) and value.strip():
         return Path(value)
     return None
+
+
+def matches_install(install_root: Path, key_path: str = app_meta.UNINSTALL_KEY) -> bool:
+    """卸载项是不是我们自己写的：DisplayName 与 InstallLocation 都要对得上。
+
+    主流卸载器在删键前都会核对这些字段；这里同样做，避免删掉其它程序的同名键。
+    """
+    values = read_values(key_path)
+    if not values:
+        return False
+    name = values.get("DisplayName")
+    location = values.get("InstallLocation")
+    if not isinstance(name, str) or name != app_meta.DISPLAY_NAME:
+        return False
+    if not isinstance(location, str) or not location.strip():
+        return False
+    try:
+        return Path(location).resolve() == Path(install_root).resolve()
+    except OSError:
+        return False

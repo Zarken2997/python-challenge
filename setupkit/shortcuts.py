@@ -79,6 +79,23 @@ def remove_shortcut(link_path: Path) -> bool:
     return True
 
 
+def read_shortcut_target(link_path: Path) -> Path | None:
+    """读出 .lnk 指向的目标；文件不存在或读取失败返回 None。
+
+    卸载前用它核对快捷方式是不是我们建的——同名但指向别处的 .lnk 不能删。
+    """
+    if not Path(link_path).exists():
+        return None
+    script = (
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut({link});"
+        "[Console]::Out.Write($s.TargetPath)"
+    ).format(link=_ps_quote(str(link_path)))
+    ok, output = _run_powershell(script)
+    if not ok or not output.strip():
+        return None
+    return Path(output.strip())
+
+
 def remove_empty_dir(path: Path) -> None:
     """删掉空目录（如开始菜单文件夹），非空或不存在都静默跳过。"""
     try:

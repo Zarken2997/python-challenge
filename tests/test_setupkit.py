@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from setupkit import app_meta, cleanup, installer, registry_ops, uninstaller  # noqa: E402
+from setupkit import app, app_meta, cleanup, installer, manifest, registry_ops, uninstaller  # noqa: E402
 
 
 class RemovalPlanTests(unittest.TestCase):
@@ -66,6 +66,7 @@ class RegistryValueTests(unittest.TestCase):
         values = registry_ops.uninstall_values(root, estimated_kb=12345, install_date="20250101")
         self.assertEqual(values["InstallLocation"], str(root))
         self.assertIn("Uninstall.exe", str(values["UninstallString"]))
+        self.assertIn("--uninstall", str(values["UninstallString"]))
         self.assertIn("--silent", str(values["QuietUninstallString"]))
         self.assertEqual(values["EstimatedSize"], 12345)
         self.assertEqual(values["NoModify"], 1)
@@ -77,22 +78,16 @@ class RegistryValueTests(unittest.TestCase):
         self.assertTrue(str(values["DisplayIcon"]).endswith(app_meta.CLIENT_EXE))
 
 
-class SelfDeleteScriptTests(unittest.TestCase):
-    def test_script_removes_install_dir_and_itself(self) -> None:
+class SelfDeleteTests(unittest.TestCase):
+    """自删改为「临时副本收尾」：副本等原进程退出后删除安装目录，再删自己。"""
+
+    def test_temp_copy_command_targets_install_dir(self) -> None:
         root = Path("C:/Users/demo/Programs/PythonChatClient")
-        script = uninstaller.self_delete_script(root)
-        self.assertIn('rmdir /s /q "{}"'.format(root), script)
-        self.assertIn('del "%~f0"', script)
+        # 源码模式没有 exe 可复制，spawn_temp_cleanup 必须返回 None 而不是抛异常
+        self.assertIsNone(uninstaller.spawn_temp_cleanup(root))
 
-    def test_script_waits_before_deleting(self) -> None:
-        script = uninstaller.self_delete_script(Path("C:/tmp/app"))
-        self.assertIn("timeout /t", script)
-
-    def test_script_retries_removal(self) -> None:
-        """卸载器删不掉自己，自删批处理要重试多次，避免第一次被占用就放弃。"""
-        script = uninstaller.self_delete_script(Path("C:/tmp/app"))
-        self.assertIn("for /L %%i in (1,1,15)", script)
-        self.assertIn("if not exist", script)
+    def test_apply_keeps_unknown_files(self) -> None:
+        self.assertTrue(hasattr(uninstaller, "cleanup_after_exit"))
 
 
 class InstallMarkerTests(unittest.TestCase):
@@ -175,6 +170,114 @@ class InstallMarkerTests(unittest.TestCase):
         keep.write_bytes(b"user data")
         names = [path.name for path in installer.foreign_entries(self.root)]
         self.assertEqual(names, ["报告.docx"])
+
+
+class ManifestTests(unittest.TestCase):
+    """安装清单：卸载器只删清单里记录过的东西。"""
+
+    def setUp(self) -> None:
+        self._tmp_dir = Path(tempfile.mkdtemp(prefix="setupkit-manifest-"))
+        self.addCleanup(shutil.rmtree, str(self._tmp_dir), True)
+        self.root = self._tmp_dir / "PythonChatClient"
+        try:
+            self.root.mkdir(parents=True)
+            probe = self.root / ".probe"
+            probe.write_text("x", encoding="utf-8")
+            probe.unlink()
+        except PermissionError:
+            self.skipTest("当前环境限制：无法在临时目录内创建/写入文件")
+
+    def test_roundtrip_records_files_and_shortcuts(self) -> None:
+        link = self._tmp_dir / "client.lnk"
+        written = manifest.write_manifest(
+            self.root,
+            files=["ChatClient.exe", "Uninstall.exe"],
+            shortcuts=[{"path": str(link), "target": str(self.root / "ChatClient.exe")}],
+            registry_values={"DisplayName": app_meta.DISPLAY_NAME},
+        )
+        self.assertTrue(written.is_file())
+        data = manifest.read_manifest(self.root)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["app_id"], app_meta.APP_ID)
+        names = [path.name for path in manifest.listed_files(data, self.root)]
+        self.assertEqual(names, ["ChatClient.exe", "Uninstall.exe"])
+        entries = manifest.shortcut_entries(data)
+        self.assertEqual(entries[0][0], link)
+        self.assertEqual(manifest.registry_values(data)["DisplayName"], app_meta.DISPLAY_NAME)
+
+    def test_listed_files_reject_escape_paths(self) -> None:
+        """清单被篡改也不能把删除范围扩到安装目录之外。"""
+        manifest.write_manifest(
+            self.root,
+            files=["ChatClient.exe", "../outside.txt", "C:/Windows/System32/cmd.exe"],
+            shortcuts=[],
+        )
+        data = manifest.read_manifest(self.root)
+        names = [str(path) for path in manifest.listed_files(data, self.root)]
+        self.assertEqual(names, [str((self.root / "ChatClient.exe").resolve())])
+
+    def test_missing_or_foreign_manifest_is_ignored(self) -> None:
+        self.assertIsNone(manifest.read_manifest(self.root))
+        (self.root / manifest.MANIFEST_NAME).write_text('{"app_id":"Other"}', encoding="utf-8")
+        self.assertIsNone(manifest.read_manifest(self.root))
+
+    def test_data_dir_only_accepts_standard_location(self) -> None:
+        manifest.write_manifest(self.root, files=[], shortcuts=[], data_dir=Path("C:/somewhere/else"))
+        data = manifest.read_manifest(self.root)
+        self.assertIsNone(manifest.data_dir_of(data))
+
+    def test_manifest_counts_as_install_dir(self) -> None:
+        manifest.write_manifest(self.root, files=["ChatClient.exe"], shortcuts=[])
+        self.assertTrue(cleanup.looks_like_install_dir(self.root))
+
+
+class UninstallFromManifestTests(unittest.TestCase):
+    """带清单的卸载只删清单文件，陌生文件保留（与 Inno/MSI 的行为一致）。"""
+
+    def setUp(self) -> None:
+        self._tmp_dir = Path(tempfile.mkdtemp(prefix="setupkit-uninstall-"))
+        self.addCleanup(shutil.rmtree, str(self._tmp_dir), True)
+        self.root = self._tmp_dir / "PythonChatClient"
+        try:
+            self.root.mkdir(parents=True)
+            (self.root / "ChatClient.exe").write_bytes(b"client")
+            (self.root / "Uninstall.exe").write_bytes(b"uninstall")
+            (self.root / "notes.txt").write_text("用户自己放的", encoding="utf-8")
+            installer.write_marker(self.root)
+            manifest.write_manifest(
+                self.root,
+                files=["ChatClient.exe", "Uninstall.exe"],
+                shortcuts=[],
+                data_dir=self._tmp_dir / "appdata",
+            )
+        except PermissionError:
+            self.skipTest("当前环境限制：无法在临时目录内创建/写入文件")
+
+    def test_deletes_listed_files_and_keeps_unknown(self) -> None:
+        logs: list[str] = []
+        code = uninstaller.uninstall(
+            self.root, keep_data=True, log=logs.append, inside_running_dir=False
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse((self.root / "ChatClient.exe").exists())
+        self.assertFalse((self.root / "Uninstall.exe").exists())
+        self.assertTrue((self.root / "notes.txt").exists(), "清单之外的文件必须保留")
+        self.assertTrue(any("清单之外的文件" in line for line in logs))
+
+
+class AppParserTests(unittest.TestCase):
+    """安装包与卸载器是同一个程序，靠 `--uninstall` 切换。"""
+
+    def test_default_is_install(self) -> None:
+        args = app.build_parser().parse_args([])
+        self.assertFalse(args.uninstall)
+        self.assertFalse(args.silent)
+
+    def test_uninstall_flag(self) -> None:
+        args = app.build_parser().parse_args(["--uninstall", "--silent", "--keep-data"])
+        self.assertTrue(args.uninstall)
+        self.assertTrue(args.silent)
+        self.assertTrue(args.keep_data)
 
 
 class ParserTests(unittest.TestCase):

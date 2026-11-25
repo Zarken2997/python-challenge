@@ -1,13 +1,14 @@
-"""构建 Windows 安装包与卸载程序。
+"""构建 Windows 安装包（安装 + 卸载二合一）。
 
-步骤：
-1. `ChatClient.exe`：GUI 客户端（单文件，无控制台窗口）；
-2. `Uninstall.exe`：卸载程序（单文件，无控制台窗口）；
-3. `ChatClientSetup.exe`：安装包，内嵌上面两个 exe，运行后给出安装向导。
+与主流安装器一致，只产出一个可执行文件：
+
+1. `ChatClient.exe`：GUI 客户端（单文件、无控制台窗口）；
+2. `ChatClientSetup.exe`：安装包，内嵌 `ChatClient.exe`；安装时把自己复制成
+   `<安装目录>\\Uninstall.exe`，卸载就是同一个程序加 `--uninstall`。
 
 用法（必须用装了 PyInstaller 的解释器执行）：
     .venv-pack\\Scripts\\python.exe setupkit\\build.py
-产物：dist\\ChatClientSetup.exe、dist\\app\\{ChatClient.exe,Uninstall.exe}
+产物：dist\\ChatClientSetup.exe、dist\\app\\ChatClient.exe
 """
 
 from __future__ import annotations
@@ -60,30 +61,24 @@ def build_client() -> Path:
     return DIST / "ChatClient.exe"
 
 
-def build_uninstaller() -> Path:
-    pyinstaller(*common_args("Uninstall"), str(REPO_ROOT / "setupkit" / "entry_uninstaller.py"))
-    return DIST / "Uninstall.exe"
-
-
-def stage_payload(client: Path, uninstaller: Path) -> Path:
-    """把两个 exe 放进 dist/app，安装包会把这些文件当作数据一起打包。"""
+def stage_payload(client: Path) -> Path:
+    """把客户端放进 dist/app，安装包把它当数据一起打包（卸载器由安装包自身复制）。"""
     payload = DIST / "app"
     if payload.exists():
         shutil.rmtree(payload)
     payload.mkdir(parents=True)
     shutil.copy2(client, payload / app_meta.CLIENT_EXE)
-    shutil.copy2(uninstaller, payload / app_meta.UNINSTALL_EXE)
     return payload
 
 
 def build_setup(payload: Path) -> Path:
     pyinstaller(
-        *common_args("ChatClientSetup"),
+        *common_args(app_meta.SETUP_EXE.rsplit(".", 1)[0]),
         "--add-data",
         "{};app".format(payload),
-        str(REPO_ROOT / "setupkit" / "entry_installer.py"),
+        str(REPO_ROOT / "setupkit" / "entry_setup.py"),
     )
-    return DIST / "{}.exe".format("ChatClientSetup")
+    return DIST / app_meta.SETUP_EXE
 
 
 def human_size(path: Path) -> str:
@@ -94,12 +89,14 @@ def human_size(path: Path) -> str:
 def main() -> int:
     DIST.mkdir(parents=True, exist_ok=True)
     client = build_client()
-    uninstaller = build_uninstaller()
-    payload = stage_payload(client, uninstaller)
+    payload = stage_payload(client)
     setup = build_setup(payload)
     print("\n构建完成：")
-    for path in (setup, client, uninstaller):
+    for path in (setup, client):
         print("  {:<24} {}".format(path.name, human_size(path)))
+    old_uninstaller = DIST / app_meta.UNINSTALL_EXE
+    if old_uninstaller.exists():
+        print("  提示：dist\\{} 是旧版独立卸载器，新版不再单独构建，可删除。".format(app_meta.UNINSTALL_EXE))
     return 0
 
 

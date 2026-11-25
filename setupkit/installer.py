@@ -1,15 +1,16 @@
-"""安装器：把打包好的 ChatClient.exe / Uninstall.exe 装到当前用户目录并登记卸载项。
+"""安装器：把客户端装到用户目录、建快捷方式、登记卸载项，并写下安装清单。
 
-设计目标：
+与主流安装器一致，安装时**记录**自己创建了什么（`install-manifest.json`），卸载时按清单
+逐项核验删除，而不是递归删整个目录。
 
-* 免管理员（整个安装只写 HKCU、%LOCALAPPDATA%、%APPDATA% 和快捷方式目录）；
-* 有图形向导，也能 `--silent` 静默安装（自动化测试与批量部署用）；
-* 只做「复制文件 + 建快捷方式 + 写卸载键」三件事，卸载逻辑全部放在 Uninstall.exe 里。
+集成方式：安装包与卸载器是**同一个 exe**。安装时把自己复制成 `<安装目录>\\Uninstall.exe`，
+注册表卸载命令是 `"...\\Uninstall.exe" --uninstall`；这样只需维护一个程序、一个构建产物。
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -19,9 +20,9 @@ if __package__ in (None, ""):  # 允许直接 `python setupkit\\installer.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "setupkit"
 
-from . import app_meta, cleanup, diag, registry_ops, shortcuts  # noqa: E402
+from . import app_meta, cleanup, diag, manifest, registry_ops, shortcuts  # noqa: E402
 
-PAYLOAD_FILES = (app_meta.CLIENT_EXE, app_meta.UNINSTALL_EXE)
+PAYLOAD_FILES = (app_meta.CLIENT_EXE,)
 
 
 def payload_dir() -> Path:
@@ -29,6 +30,16 @@ def payload_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS")) / "app"
     return Path(__file__).resolve().parents[1] / "dist" / "app"
+
+
+def current_program() -> Path | None:
+    """当前运行的可执行文件（打包后是 ChatClientSetup.exe 或安装后的 Uninstall.exe）。"""
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        return Path(sys.executable).resolve()
+    except OSError:
+        return None
 
 
 def foreign_entries(install_root: Path) -> list[Path]:
@@ -43,13 +54,9 @@ def foreign_entries(install_root: Path) -> list[Path]:
         app_meta.UNINSTALL_EXE.lower(),
         app_meta.INSTALL_MARKER.lower(),
         app_meta.SETUP_EXE.lower(),
+        manifest.MANIFEST_NAME.lower(),
     }
-    running: Path | None = None
-    if getattr(sys, "frozen", False):
-        try:
-            running = Path(sys.executable).resolve()
-        except OSError:
-            running = None
+    running = current_program()
 
     foreign: list[Path] = []
     for entry in install_root.iterdir():
@@ -80,38 +87,69 @@ def copy_payload(install_root: Path) -> list[Path]:
     return written
 
 
-def make_shortcuts(install_root: Path, desktop: bool = True, start_menu: bool = True) -> list[str]:
-    """按选项创建快捷方式，返回生成失败的说明（空列表表示全部成功）。"""
-    problems = []
+def install_self_as_uninstaller(install_root: Path, log=print) -> Path | None:
+    """把安装包自身复制成 `<安装目录>\\Uninstall.exe`（安装器与卸载器是同一个程序）。
+
+    源码模式下没有 exe 可复制，返回 None；打包后这一步是卸载入口的来源。
+    """
+    program = current_program()
+    target = app_meta.uninstaller_path(install_root)
+    if program is None:
+        log("* 源码模式：跳过复制内置卸载器（打包后才生成 Uninstall.exe）")
+        return None
+    try:
+        shutil.copy2(program, target)
+    except OSError as exc:
+        log("! 复制卸载器失败: {}".format(exc))
+        return None
+    return target
+
+
+def make_shortcuts(
+    install_root: Path, desktop: bool = True, start_menu: bool = True
+) -> tuple[list[dict[str, str]], list[str]]:
+    """按选项创建快捷方式，返回 (创建的清单条目, 失败说明)。"""
+    problems: list[str] = []
+    created: list[dict[str, str]] = []
     exe = app_meta.exe_path(install_root)
     uninstaller = app_meta.uninstaller_path(install_root)
+
+    def add(link: Path, target: Path, arguments: str, description: str, label: str) -> None:
+        ok, detail = shortcuts.create_shortcut(link, target, arguments=arguments, description=description)
+        if ok:
+            created.append({"path": str(link), "target": str(target)})
+        else:
+            problems.append("{}: {}".format(label, detail))
+
     if desktop:
-        ok, detail = shortcuts.create_shortcut(
+        add(
             app_meta.desktop_dir() / app_meta.client_shortcut_name(),
             exe,
-            description="连接聊天室注册中心并聊天",
+            "",
+            "连接聊天室注册中心并聊天",
+            "桌面快捷方式",
         )
-        if not ok:
-            problems.append("桌面快捷方式: {}".format(detail))
     if start_menu:
         folder = app_meta.start_menu_dir() / app_meta.START_MENU_FOLDER
-        ok, detail = shortcuts.create_shortcut(
-            folder / app_meta.client_shortcut_name(), exe, description="连接聊天室注册中心并聊天"
+        add(
+            folder / app_meta.client_shortcut_name(),
+            exe,
+            "",
+            "连接聊天室注册中心并聊天",
+            "开始菜单快捷方式",
         )
-        if not ok:
-            problems.append("开始菜单快捷方式: {}".format(detail))
-        ok, detail = shortcuts.create_shortcut(
+        add(
             folder / app_meta.uninstall_shortcut_name(),
             uninstaller,
-            description="卸载 {}".format(app_meta.DISPLAY_NAME),
+            "--uninstall",
+            "卸载 {}".format(app_meta.DISPLAY_NAME),
+            "卸载快捷方式",
         )
-        if not ok:
-            problems.append("卸载快捷方式: {}".format(detail))
-    return problems
+    return created, problems
 
 
 def write_marker(install_root: Path) -> Path:
-    """在安装目录写入标记文件，卸载器只认带这个标记的目录。"""
+    """在安装目录写入标记文件，兼容旧版识别逻辑（清单不可用时的兜底）。"""
     path = app_meta.marker_path(install_root)
     with open(str(path), "w", encoding="utf-8", newline="\n") as handle:
         handle.write("{} {}\n".format(app_meta.APP_ID, app_meta.VERSION))
@@ -158,9 +196,13 @@ def install(
         diag.log("复制文件失败: {!r}".format(exc))
         return 1
     log("* 已复制 {} 个文件到 {}".format(len(written), install_root))
+
+    self_copy = install_self_as_uninstaller(install_root, log)
+    if self_copy is not None:
+        written.append(self_copy)
     write_marker(install_root)
 
-    problems = make_shortcuts(install_root, desktop=desktop, start_menu=start_menu)
+    created, problems = make_shortcuts(install_root, desktop=desktop, start_menu=start_menu)
     for problem in problems:
         log("! 快捷方式创建失败（不影响使用）: {}".format(problem))
 
@@ -175,6 +217,15 @@ def install(
         log("! 写入卸载注册表失败: {}".format(exc))
         return 1
     log("* 已登记卸载项: HKCU\\{}".format(app_meta.UNINSTALL_KEY))
+
+    entry = manifest.write_manifest(
+        install_root,
+        files=[path.name for path in written],
+        shortcuts=created,
+        registry_values=values,
+        data_dir=app_meta.data_dir(),
+    )
+    log("* 已写入安装清单: {}".format(entry.name))
     return 0
 
 
