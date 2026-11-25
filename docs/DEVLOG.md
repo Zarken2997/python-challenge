@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 12:00 · META · 修掉「卸载后 Uninstall.exe 删不掉」
+- 目标: 排查「卸载完成后安装目录里仍留着 Uninstall.exe」，确认自删链路真的生效
+- 改动: `setupkit/uninstaller.py:60` 的 `remove_tree()` 原来只调 `shutil.rmtree()`，对文件会抛 `NotADirectoryError` 并被静默重试三次，导致 `cleanup_after_exit()` 删 `Uninstall.exe` 永远失败；改为「目录走 `rmtree`、文件走 `unlink`」，`_clear_readonly()` 也支持单文件；`tests/test_setupkit.py` 新增 `test_cleanup_removes_uninstaller_and_keeps_setup_package`（收尾后 `Uninstall.exe`/标记/清单消失、`ChatClientSetup.exe` 保留）
+- 验证: `python -m unittest tests.test_setupkit` → `Ran 40 tests` `OK`；手工构造 `logs\cleanup-test`（`Uninstall.exe` + `ChatClientSetup.exe` + `install-info.txt`）跑 `cleanup_after_exit()` → 输出「安装目录里还有清单之外的文件，保留 … ChatClientSetup.exe」，目录里只剩 `ChatClientSetup.exe`；`setupkit\build.py` 重新产出 `dist\ChatClientSetup.exe` 23.63 MB（11:59:58）
+- 决策: 保留「清单之外的文件不删」的语义，因此把安装包装在安装目录里时，卸载后它仍会留着，需要用户手动删；这是有意的，避免误删用户自己放的东西
+- 问题: 之前「拖回收站收尾」的提示其实掩盖了 `remove_tree` 的 bug——现在正常情况下不需要任何手动收尾，提示只在确实删不掉时出现
+- 下一步: 用户在桌面重装新版安装包，卸载后确认安装目录（除自己放的安装包外）确实清空
+
 ## 2026-11-25 11:47 · META · 双击 Uninstall.exe 误进安装向导
 - 目标: 用户安装后发现安装目录里有个 24 MB 的 `Uninstall.exe`，双击它弹出的却是安装界面；需要让「双击 Uninstall.exe = 卸载」成立
 - 改动: `setupkit/app.py` 新增 `is_uninstall_invocation(executable=None)`（按文件名 `Uninstall.exe` 判断，仅打包运行时生效，临时收尾副本 `python-chat-client-uninstall-<pid>.exe` 不受影响）与 `normalize_argv()`（无 `--cleanup`/`--uninstall` 时自动补 `--uninstall`），`main()` 改用 `build_parser().parse_args(normalize_argv(argv))`；`setupkit/README.md` 说明「Uninstall.exe 是安装包副本、按文件名区分模式」，并补充安装包可随时删除的保证；`tests/test_setupkit.py` 新增 4 项（按名识别、临时副本不误判、自动补参数、显式参数与 `--cleanup` 保持原样）

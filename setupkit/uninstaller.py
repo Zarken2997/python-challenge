@@ -58,12 +58,20 @@ def kill_running_client(log=print) -> None:
 
 
 def remove_tree(path: Path, log=print, attempts: int = 3) -> bool:
-    """递归删除目录，遇到占用/只读重试几次；返回是否删干净。"""
+    """删除文件或目录（递归），遇到占用/只读重试几次；返回是否删干净。
+
+    注意：既要能删目录也要能删单个文件——收尾阶段要删的是 `Uninstall.exe`，
+    早期版本只调 `shutil.rmtree()`，对文件会抛 `NotADirectoryError`，
+    表现为「卸载后 Uninstall.exe 一直留着」。
+    """
     if not path.exists():
         return True
     for attempt in range(1, attempts + 1):
         try:
-            shutil.rmtree(path)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
             return True
         except FileNotFoundError:
             return True
@@ -75,6 +83,12 @@ def remove_tree(path: Path, log=print, attempts: int = 3) -> bool:
 
 
 def _clear_readonly(path: Path) -> None:
+    if path.is_file():
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            return
+        return
     for child in path.rglob("*"):
         try:
             os.chmod(child, 0o700)

@@ -90,6 +90,30 @@ class SelfDeleteTests(unittest.TestCase):
     def test_apply_keeps_unknown_files(self) -> None:
         self.assertTrue(hasattr(uninstaller, "cleanup_after_exit"))
 
+    def test_cleanup_removes_uninstaller_and_keeps_setup_package(self) -> None:
+        """收尾副本删掉 Uninstall.exe/标记/清单，但保留用户放着的安装包。"""
+        tmp_dir = Path(tempfile.mkdtemp(prefix="setupkit-cleanup-"))
+        self.addCleanup(shutil.rmtree, str(tmp_dir), True)
+        root = tmp_dir / "PythonChatClient"
+        try:
+            root.mkdir(parents=True)
+            (root / app_meta.UNINSTALL_EXE).write_bytes(b"uninstall")
+            (root / app_meta.SETUP_EXE).write_bytes(b"setup")
+            installer.write_marker(root)
+            manifest.write_manifest(root, files=["ChatClient.exe"], shortcuts=[])
+        except PermissionError:
+            self.skipTest("当前环境限制：无法在临时目录内创建/写入文件")
+
+        logs: list[str] = []
+        code = uninstaller.cleanup_after_exit(root, parent_pid=0, log=logs.append)
+
+        self.assertEqual(code, 0)
+        self.assertFalse((root / app_meta.UNINSTALL_EXE).exists(), "Uninstall.exe 应被删掉")
+        self.assertFalse((root / app_meta.INSTALL_MARKER).exists(), "标记文件应被删掉")
+        self.assertFalse((root / manifest.MANIFEST_NAME).exists(), "清单应被删掉")
+        self.assertTrue((root / app_meta.SETUP_EXE).exists(), "安装包属于清单之外的文件，必须保留")
+        self.assertTrue(any("清单之外的文件" in line for line in logs))
+
 
 class InstallMarkerTests(unittest.TestCase):
     """卸载器只认「自己装过的目录」：靠安装时写入的标记文件判断。"""
