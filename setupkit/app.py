@@ -3,7 +3,8 @@
 | 启动方式 | 行为 |
 | --- | --- |
 | `ChatClientSetup.exe` | 安装向导 |
-| `ChatClientSetup.exe --uninstall` | 卸载向导（安装时复制的 `Uninstall.exe` 就是这样被调起的） |
+| `Uninstall.exe`（安装时复制的那份） | 卸载向导（按文件名自动识别，双击即可） |
+| `... --uninstall` | 卸载向导（显式指定，供脚本与注册表调用） |
 | `... --silent [--uninstall]` | 静默安装 / 静默卸载（自动化与批量部署用） |
 | `... --cleanup <目录> --parent-pid N` | 临时副本收尾，内部使用，不出现在帮助里 |
 """
@@ -19,6 +20,32 @@ if __package__ in (None, ""):  # 允许直接 `python setupkit\\app.py`
     __package__ = "setupkit"
 
 from . import app_meta, diag, installer, uninstaller  # noqa: E402
+
+
+def is_uninstall_invocation(executable: str | None = None) -> bool:
+    """当前进程是不是被当作「卸载器」启动的（文件名是 `Uninstall.exe`）。
+
+    安装时安装包会把自己复制成 `<安装目录>\\Uninstall.exe`，用户双击这个文件时
+    命令行为空；只认 `--uninstall` 的话会错误地弹出安装向导，所以这里按文件名兜底。
+    临时收尾副本叫 `python-chat-client-uninstall-<pid>.exe`，与 `Uninstall` 不完全相等，
+    不会被误判（它另有 `--cleanup` 参数）。
+    """
+    if executable is None:
+        if not getattr(sys, "frozen", False):
+            return False
+        executable = sys.executable
+    stem = Path(executable).stem.lower()
+    return stem == Path(app_meta.UNINSTALL_EXE).stem.lower()
+
+
+def normalize_argv(argv: list[str] | None) -> list[str]:
+    """把「双击 Uninstall.exe」规范成显式 `--uninstall`，其余情况原样返回。"""
+    items = list(sys.argv[1:] if argv is None else argv)
+    if "--cleanup" in items or "--uninstall" in items:
+        return items
+    if is_uninstall_invocation():
+        return ["--uninstall"] + items
+    return items
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(normalize_argv(argv))
     try:
         if args.cleanup:
             return uninstaller.cleanup_after_exit(Path(args.cleanup), args.parent_pid)

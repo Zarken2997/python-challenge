@@ -21,6 +21,11 @@
 
 两个 exe 都是 PyInstaller 单文件（`--onefile --windowed`），不依赖本机 Python。
 
+> **安装目录里的 `Uninstall.exe` 不是另一个程序**，它就是安装包的一份副本（所以大小一样、时间戳一样）。
+> 主流安装器同样如此：Inno Setup 会在安装目录放 `unins000.exe`，MSI 会在 `C:\Windows\Installer` 放缓存。
+> 区别只在**文件名**：程序发现自己叫 `Uninstall.exe` 就自动进入卸载模式，双击即可卸载；
+> 安装包本体叫 `ChatClientSetup.exe`，双击就是安装向导。
+
 ## 2. 构建
 
 ```powershell

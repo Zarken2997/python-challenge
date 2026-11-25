@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -278,6 +279,28 @@ class AppParserTests(unittest.TestCase):
         self.assertTrue(args.uninstall)
         self.assertTrue(args.silent)
         self.assertTrue(args.keep_data)
+
+    def test_double_click_uninstaller_is_detected_by_name(self) -> None:
+        """双击安装目录里的 Uninstall.exe 时命令行是空的，必须按文件名进卸载。"""
+        self.assertTrue(app.is_uninstall_invocation(r"C:\Programs\PythonChatClient\Uninstall.exe"))
+        self.assertFalse(app.is_uninstall_invocation(r"C:\Users\me\Down\ChatClientSetup.exe"))
+
+    def test_temp_cleanup_copy_is_not_treated_as_uninstaller(self) -> None:
+        """临时收尾副本 `python-chat-client-uninstall-1234.exe` 不能被当成卸载器。"""
+        self.assertFalse(app.is_uninstall_invocation(r"C:\Temp\python-chat-client-uninstall-1234.exe"))
+
+    def test_normalize_argv_injects_uninstall_for_double_click(self) -> None:
+        with mock.patch.object(app, "is_uninstall_invocation", return_value=True):
+            self.assertEqual(app.normalize_argv(["--silent"]), ["--uninstall", "--silent"])
+            self.assertEqual(app.normalize_argv([]), ["--uninstall"])
+
+    def test_normalize_argv_keeps_explicit_and_cleanup(self) -> None:
+        with mock.patch.object(app, "is_uninstall_invocation", return_value=True):
+            self.assertEqual(app.normalize_argv(["--uninstall"]), ["--uninstall"])
+            self.assertEqual(
+                app.normalize_argv(["--cleanup", r"C:\dir", "--parent-pid", "9"]),
+                ["--cleanup", r"C:\dir", "--parent-pid", "9"],
+            )
 
 
 class ParserTests(unittest.TestCase):

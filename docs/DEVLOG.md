@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 11:47 · META · 双击 Uninstall.exe 误进安装向导
+- 目标: 用户安装后发现安装目录里有个 24 MB 的 `Uninstall.exe`，双击它弹出的却是安装界面；需要让「双击 Uninstall.exe = 卸载」成立
+- 改动: `setupkit/app.py` 新增 `is_uninstall_invocation(executable=None)`（按文件名 `Uninstall.exe` 判断，仅打包运行时生效，临时收尾副本 `python-chat-client-uninstall-<pid>.exe` 不受影响）与 `normalize_argv()`（无 `--cleanup`/`--uninstall` 时自动补 `--uninstall`），`main()` 改用 `build_parser().parse_args(normalize_argv(argv))`；`setupkit/README.md` 说明「Uninstall.exe 是安装包副本、按文件名区分模式」，并补充安装包可随时删除的保证；`tests/test_setupkit.py` 新增 4 项（按名识别、临时副本不误判、自动补参数、显式参数与 `--cleanup` 保持原样）
+- 验证: `pythoncore-3.14-64\python.exe -m unittest tests.test_setupkit` → `Ran 39 tests` `OK`；两版解释器全量 `Ran 136 tests` `OK`；`setupkit\build.py` 重新产出 `dist\ChatClientSetup.exe` 23.63 MB（11:46:14）；源码模式安装→卸载链路复跑：`entry_installer.py --silent --dir logs\install-test --no-desktop --no-startmenu` 写入 3 个文件，`entry_uninstaller.py --silent --dir logs\install-test --keep-data` 输出「已删除卸载注册表项」「已删除安装目录」「卸载完成，未发现残留」，`Test-Path` 为 False
+- 决策: 用「文件名」而不是「是否传了 --uninstall」来决定默认模式，因为用户双击时命令行是空的；只对精确的 `Uninstall` 主干名生效，避免把临时收尾副本误判成卸载器
+- 问题: 打包后的 exe 在本沙箱仍然无法启动（`Start-Process` 一直不返回，`%TEMP%` 下没有 `_MEI*`、日志也没有新记录），所以「双击 Uninstall.exe 弹出卸载向导」只能由用户桌面确认；退出码 1 的 `[WinError 5]` 类问题属于沙箱限制，不是代码回归
+- 下一步: 用户重装一次新版安装包，双击安装目录里的 `Uninstall.exe` 确认直接进卸载界面；若想进一步减少安装目录占用，可以再出一个不含客户端载荷的精简卸载器（约 12 MB）
+
 ## 2026-11-25 11:34 · T1 · 安装/卸载二合一：清单驱动与删除前身份核验
 - 目标: 按主流安装器做法改造 setupkit——安装与卸载合并成一个 exe，卸载只删自己装过的东西，并在删除前核验对象身份
 - 改动: 新增 `setupkit/manifest.py`（`install-manifest.json` 记录文件/快捷方式/注册表值/数据目录，`listed_files()` 拒绝 `..` 与绝对路径）与 `setupkit/app.py`（统一入口，`--uninstall` 切换卸载）；`installer.py` 增加 `install_self_as_uninstaller()`（把安装包自身复制成 `Uninstall.exe`）与清单写入，`make_shortcuts()` 返回创建清单，`foreign_entries()` 白名单放行 `install-manifest.json`；`uninstaller.py` 重写为清单驱动（`remove_shortcuts()` 用 `read_shortcut_target()` 核验目标、`matches_install()` 核验注册表、`spawn_temp_cleanup()` 复制自身到 `%TEMP%` 后 `wait_for_process_exit()` 收尾、清单外文件保留并列出）；`registry_ops.uninstall_values()` 的卸载命令改为 `"<目录>\Uninstall.exe" --uninstall`；`build.py` 只产出 `ChatClient.exe` 与 `ChatClientSetup.exe`；`tests/test_setupkit.py` 增加 `ManifestTests`、`UninstallFromManifestTests`、`AppParserTests`、`SelfDeleteTests`，共 35 项
