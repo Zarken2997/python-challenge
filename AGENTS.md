@@ -52,6 +52,7 @@ python-challenge/
 ├─ tests/                    # test_*.py，与被测模块同名
 ├─ tools/
 │  └─ devlog.py              # 开发日志工具：new / check / stats
+├─ setupkit/                 # 客户端安装包/卸载器：build.py、installer.py、uninstaller.py、entry_*.py
 ├─ requirements/             # 依赖锁定：task1.txt、task2.txt、task3.txt
 ├─ data/                     # 数据集与数据库（默认不入库，保留 .gitkeep）
 ├─ outputs/                  # 模型权重、训练曲线、导出结果（不入库）
