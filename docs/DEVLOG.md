@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 10:54 · T1 · 重新生成安装包并验证安装/卸载链路
+- 目标: 重建被误删的 `dist/` 安装包，并确认「安装 → 卸载」链路能装得上、卸得干净、且卸载器不会误删别的目录
+- 改动: 新建 `.venv-pack`（Python 3.14.3）并用 `logs\_manual_wheels.py` 手工解包 PyInstaller 6.22.3 与依赖（pip 在本机会卡住）；`python setupkit\build.py` 重新产出 `dist\ChatClient.exe`(11.9 MB)、`dist\Uninstall.exe`(11.82 MB)、`dist\ChatClientSetup.exe`(35.05 MB) 与 `dist\app\`；`setupkit/` 源码未改（仍含 `install-info.txt` 标记与 `looks_like_install_dir` 护栏）
+- 验证: `python -m unittest tests.test_setupkit -v` → `Ran 23 tests` `OK`；源码模式 `python setupkit\entry_installer.py --silent --dir F:\...\logs\install-test --no-desktop --no-startmenu` → 「已复制 2 个文件」「已登记卸载项: HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\PythonChatClient」，`install-info.txt` 内容 `PythonChatClient 1.0.0` + `installed_at=...`，exit 0；随后 `python setupkit\entry_uninstaller.py --silent --dir F:\...\logs\install-test` → 「已删除用户数据目录」「已删除安装目录」「卸载完成，未发现残留」，目录与注册表键均 `False`，exit 0
+- 决策: 仍用 `--onefile`，因为分发只有一个 exe 最省事；用户之前遇到的 `Could not create temporary directory!` 属于运行环境（杀软/受控文件夹访问/临时目录）问题，若在他的机器上复现，构建脚本改 `--onedir` 即可绕开运行时解压
+- 问题: 打包后的 `dist\ChatClientSetup.exe` 在本沙箱内一启动就挂起（`Start-Process` 240 秒无退出、无 `_MEI` 目录、无进程、无日志），因此只能在源码模式验证安装/卸载链路；桌面环境下的双击安装、快捷方式、自删仍需用户实测
+- 下一步: 用户双击 `dist\ChatClientSetup.exe` 完成一次真实安装（选安装目录 → 桌面/开始菜单快捷方式 → 启动客户端），再从「设置 → 应用」或开始菜单的「卸载 任务1 聊天客户端」卸载，确认 `%LOCALAPPDATA%\Programs\PythonChatClient`、`%APPDATA%\PythonChatClient` 与注册表项全部消失
+
 ## 2026-11-25 10:26 · META · 按远端 main 重置仓库并重新合入安装包
 - 目标: 按用户要求用 GitHub 远端 main 的内容覆盖本地恢复版，同时保住安装包代码与被误删时丢失的题目原文
 - 改动: `git fetch origin` 后 `git reset --hard origin/main`（HEAD 从本地 `c12ea7e` 变为远端 `fa109fb`，保留备份分支 `backup-recovered`）；从备份分支取回 `setupkit/`(14 个文件)、`tests/test_setupkit.py`、`.gitignore`；`docs/DEVLOG.md` 以远端 11 条原文为正文、前置新增 3 条；`AGENTS.md` §3 结构树补 `setupkit/` 一行；三份 docx 用 `git mv` 从 `python挑战课题/` 移回仓库根（保留改名历史）
