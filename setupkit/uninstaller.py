@@ -86,11 +86,20 @@ def remove_shortcuts(install_root: Path, log=print) -> list[Path]:
 
 
 def self_delete_script(install_root: Path) -> str:
-    """延迟批处理的正文：等卸载器退出 → 删安装目录 → 删批处理自己。"""
+    """延迟批处理的正文：等卸载器退出 → 反复尝试删安装目录 → 删批处理自己。
+
+    卸载器自己是删不掉自己的（exe 正在运行），只能交给外部进程。这里做 15 次重试，
+    因为杀软扫描、资源管理器占用都可能让第一次 `rmdir` 失败；失败原因写进
+    `%TEMP%\\python-chat-client-uninstall.log`，方便排查「为什么文件夹还在」。
+    """
     return (
         "@echo off\r\n"
-        "timeout /t 3 /nobreak > nul\r\n"
-        'rmdir /s /q "{0}" >> "%TEMP%\\python-chat-client-uninstall.log" 2>&1\r\n'
+        "for /L %%i in (1,1,15) do (\r\n"
+        '  if not exist "{0}" goto done\r\n'
+        "  timeout /t 1 /nobreak > nul\r\n"
+        '  rmdir /s /q "{0}" >> "%TEMP%\\python-chat-client-uninstall.log" 2>&1\r\n'
+        ")\r\n"
+        ":done\r\n"
         'del "%~f0"\r\n'
     ).format(install_root)
 
@@ -239,7 +248,15 @@ def run_gui(install_root: Path, keep_data: bool) -> int:
         root.update_idletasks()
         code = uninstall(install_root, keep_data=keep_var.get())
         if code == 0:
-            messagebox.showinfo("卸载完成", "已卸载并清理干净。")
+            note = ""
+            if install_root.exists():
+                note = (
+                    "\n\n安装目录里现在只剩卸载器自己（正在运行，删不掉自己），"
+                    "其它文件、快捷方式、注册表项和用户数据都已在本次清理中删除。"
+                    "\n它会尝试自动删除该文件夹；如果几秒后文件夹还在，"
+                    "直接把该文件夹（或里面的 Uninstall.exe）拖进回收站即可，不会再有残留。"
+                )
+            messagebox.showinfo("卸载完成", "已卸载并清理干净。" + note)
             root.destroy()
         else:
             status.set("卸载未完全成功")

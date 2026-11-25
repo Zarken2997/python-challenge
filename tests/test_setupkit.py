@@ -88,6 +88,12 @@ class SelfDeleteScriptTests(unittest.TestCase):
         script = uninstaller.self_delete_script(Path("C:/tmp/app"))
         self.assertIn("timeout /t", script)
 
+    def test_script_retries_removal(self) -> None:
+        """卸载器删不掉自己，自删批处理要重试多次，避免第一次被占用就放弃。"""
+        script = uninstaller.self_delete_script(Path("C:/tmp/app"))
+        self.assertIn("for /L %%i in (1,1,15)", script)
+        self.assertIn("if not exist", script)
+
 
 class InstallMarkerTests(unittest.TestCase):
     """卸载器只认「自己装过的目录」：靠安装时写入的标记文件判断。"""

@@ -6,6 +6,14 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-25 11:21 · META · 卸载器自删改为重试并提示「拖回收站收尾」
+- 目标: 解决「卸载完成后安装目录里还剩一个 `Uninstall.exe`」的困惑，并让自删更可靠
+- 改动: `setupkit/uninstaller.py` 的 `self_delete_script()` 从「等 3 秒删一次」改为「最多 15 次、每次等 1 秒、目录不存在就提前结束」，删除输出写入 `%TEMP%\python-chat-client-uninstall.log`；`run_gui()` 在卸载成功但安装目录仍在时，弹窗明确说明「里面只剩卸载器自己，其它文件/快捷方式/注册表/用户数据已清，把该文件夹或 `Uninstall.exe` 拖进回收站即可」；`tests/test_setupkit.py` 增 1 项断言重试循环
+- 验证: `python -m unittest tests.test_setupkit` → `Ran 28 tests` `OK`；直接执行生成的自删批处理（`logs\selfdel-test` 内含 `Uninstall.exe` + `install-info.txt`）→ 目录被删除、批处理自身也被删除；两版解释器全量 `Ran 125 tests` `OK`；重新打包 `dist\ChatClient.exe`/`Uninstall.exe`/`ChatClientSetup.exe`（11:20:50–11:21:04）
+- 决策: 保留「卸载器自删」这个便利动作，但把「删不掉也可以手动收尾」写进提示；因为运行中的 exe 无论如何都删不掉自己，与其假装干净，不如明确告知只剩一个文件
+- 问题: 自删依赖 `cmd` 后台进程，杀软拦截时仍可能失败——失败时目录里只剩 `Uninstall.exe` 一个文件，拖进回收站即可，不会有其它残留
+- 下一步: 用户用新版卸载器跑一遍，确认弹窗提示与实际残留一致
+
 ## 2026-11-25 11:11 · META · 安装器放行「目录里只有安装包本身」并显示真实失败原因
 - 目标: 修掉上一版护栏的误伤——用户把 `ChatClientSetup.exe` 放在 `F:\codex,ultilize\测试` 并选该目录安装，被「目录不是空的」挡下，且弹窗只说「请检查目录权限」，看不出真实原因
 - 改动: `setupkit/installer.py` 新增 `foreign_entries(install_root)`，把 `ChatClient.exe`/`Uninstall.exe`/`install-info.txt`/`ChatClientSetup.exe` 和正在运行的安装包自身排除，只统计真正的外来文件；`install()` 改为仅在有外来文件时拒绝并列出冲突文件名；`run_gui.do_install()` 收集 `install()` 的日志行、把最后一条 `!` 原因写进状态栏与弹窗，并把整段日志追加到 `%TEMP%\PythonChatClient-setup.log`；`tests/test_setupkit.py` 增 2 项（外来文件识别、用户文件被拒且日志点名 `main.py`）
