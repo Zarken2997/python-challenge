@@ -6,6 +6,24 @@
 
 <!-- ENTRIES -->
 
+## 2026-11-27 11:30 · T2 · 新增《任务2 代码讲解书》
+- 目标: 给不熟悉 MySQL 与 Python 文件读写的读者写一份逐函数讲解，能对着代码说明"每条数据从哪来、每个函数做什么"
+- 改动: 新增 `docs/reports/task2-code-guide.md`（938 行，10 章）：数据库/表/主外键入门、SQLite 与 MySQL 对照（含换库要改的 7 处）、Python 文本/CSV/SQLite 三种写入方式、三条数据通路图、8 张表逐字段说明、`config/db/repository/stats/recorder/importer/seed/cli/audit_panel` 与 `gui_server`、`hub` 接线逐函数解释、两条完整数据流示例、10 条设计决策、运行命令、10 条 FAQ、术语与命名规律
+- 验证: 行数与章节标题已核对（`(Get-Content docs\reports\task2-code-guide.md).Count` → 938）；文档内命令实测：删库后 `python -m src.task2_db_system.seed` → `log_event 120 / chat_message 60 / operation 12 / incident 3`，`python -m src.task2_db_system.cli --stats` → `运行实例 1 个；日志 120 条（错误 13 / 警告 13）`，与文档示例一致
+- 决策: 写成 Markdown 而不是 Word，因为和源码同仓、可直接在编辑器里对照阅读；需要提交 Word 版时再按 AGENTS 第 10 节用 python-docx 导出
+- 问题: 文档初稿把导出 CSV 写成"当前视图"，实际 `AuditPanel.export_csv()` 导出的是当前页 `self._rows`，已改正；补上遗漏的 `_short()` 说明
+- 下一步: 用户试读后指出看不懂的段落；如需交作业再导出 docx 并补封面信息
+
+
+## 2026-11-27 10:05 · T2 · 聊天服务器运维日志管理系统（首次落地）
+- 目标: 按任务 2 要求做一个与任务 1 通讯软件关联的 SQLite 管理信息系统：记录服务器运行日志、房间/用户/会话、管理员操作、聊天正文与故障事故，并能在服务器监控台内查询
+- 改动: 新增 `src/task2_db_system/`（`config.py`、`schema.sql`、`db.py`、`repository.py`、`stats.py`、`recorder.py`、`importer.py`、`seed.py`、`cli.py`）；新增 `src/task1_socket_chat/audit_panel.py`；`hub.py` 增加 `on_room_created/on_room_closed/on_room_activity` 回调；`gui_server.py` 增加"数据库审计（任务2）"标签页、启动/停止记录器、`--db` 参数，并为创建/关闭房间、踢人、公告、批准/拒绝申请补 `_audit` 记录；新增 `tests/test_task2_db.py`（13 项）、`tests/test_task2_recorder.py`（6 项）、`tests/test_task2_cli.py`（7 项）；报告 `docs/reports/task2-design.md` 与 5 张截图 `docs/reports/assets/task2-audit-*.png`
+- 验证: `python -m unittest tests.test_task2_db tests.test_task2_recorder tests.test_task2_cli` → `Ran 26 tests in 0.855s` `OK`；全量 `python -m unittest discover -s tests` → `Ran 163 tests in 6.286s` `OK (skipped=16)`；`python -m compileall -q src tests` → exit 0；`python -m src.task2_db_system.seed --reset` → `server_instance 1 / chat_room 3 / chat_user 8 / user_session 8 / log_event 120 / chat_message 60 / operation 12 / incident 3`；`python -m src.task2_db_system.cli --demo` 输出四视图与统计；GUI 冒烟（真实 `MonitorApp` 开服→建房→全服公告→关房→停服）后查库得到 `chat_room 1 / chat_message 2 / log_event 7 / operation 2`，`SMOKE OK`
+- 决策: 数据库文件用 `data/chat_ops.db` 而非 AGENTS 第 9.2 节默认的 `data/app.db`，因为它与任务 1 共用仓库、名字能说明是"聊天运维"库；写入采用"独立写线程 + 队列 + 每 0.5 s/200 条批量事务 + fail-open"，因为聊天不能被磁盘 IO 或锁等待阻塞；日志走 `logging.Handler`、房间/用户/会话走 hub 回调，因为前者零侵入覆盖全部日志、后者能拿到结构化字段
+- 问题: 沙箱受限令牌（`S-1-4-842239139-994762104`）对 `src/`、`tests/`、`docs/` 无写权限，Python 无法直接写报告/资产，改用文件工具写入并用一次提权复制截图；`audit_panel` 程序化切换视图时排序键残留 `ts` 导致弹"不支持按 ts 排序"、表头也不刷新，已改为刷新时校验排序白名单并按视图重建列；测试库不能在系统临时目录或 `data/` 子目录建库，统一改为 `data/{prefix}-{uuid}.db` 并在关闭连接后删除
+- 下一步: 让用户按真实交互点一遍四个视图与事故增删改；如需要，把 `docs/reports/task2-design.md` 导出为 Word 并补封面班级/学号/姓名
+
+
 ## 2026-11-25 12:00 · META · 修掉「卸载后 Uninstall.exe 删不掉」
 - 目标: 排查「卸载完成后安装目录里仍留着 Uninstall.exe」，确认自删链路真的生效
 - 改动: `setupkit/uninstaller.py:60` 的 `remove_tree()` 原来只调 `shutil.rmtree()`，对文件会抛 `NotADirectoryError` 并被静默重试三次，导致 `cleanup_after_exit()` 删 `Uninstall.exe` 永远失败；改为「目录走 `rmtree`、文件走 `unlink`」，`_clear_readonly()` 也支持单文件；`tests/test_setupkit.py` 新增 `test_cleanup_removes_uninstaller_and_keeps_setup_package`（收尾后 `Uninstall.exe`/标记/清单消失、`ChatClientSetup.exe` 保留）

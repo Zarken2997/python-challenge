@@ -130,6 +130,11 @@ class ChatHub:
         self._threads: set[threading.Thread] = set()
         # 监控台挂载：房间内每来一条消息就回调 (room_id, message)
         self.on_room_event = None  # type: ignore[assignment]
+        # 任务2 审计挂载点（可选，默认不启用）：不改变原有 on_room_event 的签名，
+        # 避免影响已有的监控台与测试。
+        self.on_room_created = None  # type: ignore[assignment]
+        self.on_room_closed = None  # type: ignore[assignment]
+        self.on_room_activity = None  # type: ignore[assignment]
 
     # ------------------------------------------------------------ 生命周期
 
@@ -263,6 +268,7 @@ class ChatHub:
         with self._lock:
             self._rooms[room_id] = room
         LOGGER.info("[聊天室] 创建「%s」→ %s（申请人：%s）", room.name, room.address, room.created_by)
+        self._notify_room(self.on_room_created, room)
         self._push_rooms()
         return room
 
@@ -275,6 +281,7 @@ class ChatHub:
         room.server.broadcast_system(announce)
         room.server.shutdown()
         LOGGER.info("[聊天室] 关闭「%s」（%s）", room.name, room.address)
+        self._notify_room(self.on_room_closed, room, reason=announce)
         self._push_rooms()
         return True
 
@@ -476,6 +483,8 @@ class ChatHub:
     def _record_room_event(self, room: Room, message: Message) -> None:
         """缓存房间内最近的消息，并转给监控台（按房间分开显示）。"""
         room.messages.append(message)
+        # 先给审计记录器（它只入队、立刻返回），再给界面回调。
+        self._notify_room(self.on_room_activity, room, message=message)
         callback = self.on_room_event
         if callback is None:
             return
@@ -483,6 +492,15 @@ class ChatHub:
             callback(room.room_id, message)
         except Exception as exc:  # noqa: BLE001 - 界面回调出错不能影响房间线程
             LOGGER.warning("房间消息回调失败: %s", exc)
+
+    def _notify_room(self, callback, room: Room, *args: object, **kwargs: object) -> None:
+        """调用可选的房间审计回调；回调异常只记警告，不影响聊天线程。"""
+        if callback is None:
+            return
+        try:
+            callback(room, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - 审计失败不能拖垮网络线程
+            LOGGER.warning("房间审计回调失败: %s", exc)
 
     def room_messages(self, room_id: int, limit: int = ROOM_HISTORY) -> list[Message]:
         """取某房间最近的消息（进入房间监控时先补历史）。"""

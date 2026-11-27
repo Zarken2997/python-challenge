@@ -21,20 +21,27 @@ import socket
 import sys
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 if __package__ in (None, ""):
     # PyCharm 的绿色三角按「脚本」方式运行本文件时包内相对导入会失败；
     # 这里把仓库根目录加入 sys.path 并补上包名，`python -m ...` 与直接运行都可用。
-    from pathlib import Path
-
     _REPO_ROOT = Path(__file__).resolve().parents[2]
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     __package__ = "src.task1_socket_chat"
 
+from .audit_panel import AuditPanel
 from .config import DEFAULT_HOST, DEFAULT_PORT, HubConfig
 from .hub import ChatHub
+
+try:  # 直接用 `python src/task1_socket_chat/gui_server.py` 跑时，包级相对导入可能不可用
+    from ..task2_db_system.config import DEFAULT_DB_PATH
+    from ..task2_db_system.recorder import AuditRecorder
+except ImportError:  # pragma: no cover - 仅脚本方式运行会走到这里
+    from src.task2_db_system.config import DEFAULT_DB_PATH  # type: ignore[no-redef]
+    from src.task2_db_system.recorder import AuditRecorder  # type: ignore[no-redef]
 
 LOGGER = logging.getLogger("task1.hub")
 
@@ -89,10 +96,18 @@ def display_address(host: str, port: int) -> str:
 class MonitorApp:
     """多聊天室监控台窗口。"""
 
-    def __init__(self, root: tk.Tk, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        db_path: str | Path | None = None,
+    ) -> None:
         self.root = root
         self.hub: ChatHub | None = None
         self._bound_port: int | None = None
+        self.audit_db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        self.recorder: AuditRecorder | None = None
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.handler = QueueLogHandler(self.log_queue)
         self.handler.setLevel(logging.INFO)
@@ -321,6 +336,10 @@ class MonitorApp:
         self.log_text.tag_configure("notice", foreground="#4fc3f7")
         self.log_text.tag_configure("info", foreground="#d6dde6")
 
+        # 标签 3：任务2 的数据库审计（浏览/排序/查询/增删改 + 导出）。
+        self.audit_panel = AuditPanel(self.right_notebook, self.audit_db_path)
+        self.right_notebook.add(self.audit_panel, text="数据库审计（任务2）")
+
     # ---------------------------------------------------------------- 生命周期
 
     def start_hub(self) -> int | None:
@@ -348,6 +367,7 @@ class MonitorApp:
         self.hub = hub
         self._bound_port = bound_port
         hub.on_room_event = self._on_room_event
+        self._start_audit(bound_host, bound_port)
         self.port_var.set(str(bound_port))
         self.host_entry.config(state=tk.DISABLED)
         self.port_entry.config(state=tk.DISABLED)
@@ -366,7 +386,14 @@ class MonitorApp:
         hub, self.hub = self.hub, None
         if hub is not None:
             hub.on_room_event = None
+            if self.recorder is not None:
+                self.recorder.record_server_stopped()
+            # 先 shutdown（房间关闭事件还会进队列），再停记录器把队列写完。
             hub.shutdown()
+            hub.on_room_created = None
+            hub.on_room_closed = None
+            hub.on_room_activity = None
+            self._stop_audit()
             self._append("* 注册中心已停止，所有聊天室与客户端连接已关闭", "notice")
         self.stop_monitor()
         self._bound_port = None
@@ -378,9 +405,60 @@ class MonitorApp:
         self.notice_button.config(state=tk.DISABLED)
         self._refresh_all_now()
 
+    def _start_audit(self, host: str, port: int) -> None:
+        """为本次运行开一个审计实例，并把 hub/日志两条数据通路接上。"""
+        if self.recorder is not None:
+            return
+        recorder = AuditRecorder(
+            self.audit_db_path,
+            instance_name="聊天服务器",
+            host=host,
+            port=port,
+        )
+        if not recorder.start():
+            self._append(
+                f"! 审计数据库不可用（{self.audit_db_path}），本次运行不记录日志", "warning"
+            )
+            return
+        recorder.attach_logging("task1", logging.INFO)
+        hub = self.hub
+        if hub is not None:
+            hub.on_room_created = recorder.record_room_created
+            hub.on_room_closed = recorder.record_room_closed
+            hub.on_room_activity = recorder.record_room_message
+        recorder.record_server_started()
+        self.recorder = recorder
+        self._append(f"* 审计数据库已连接：{self.audit_db_path}", "notice")
+        self.audit_panel.refresh()
+
+    def _stop_audit(self) -> None:
+        recorder, self.recorder = self.recorder, None
+        if recorder is None:
+            return
+        try:
+            recorder.stop()
+        finally:
+            self.audit_panel.refresh()
+
+    def _audit(
+        self,
+        action: str,
+        actor: str = "管理员",
+        target: str = "",
+        room_name: str = "",
+        result: str = "ok",
+        detail: str = "",
+    ) -> None:
+        """界面上的管理动作统一从这里落审计记录；没启动数据库时静默跳过。"""
+        if self.recorder is not None:
+            self.recorder.record_operation(
+                action, actor=actor, target=target, room_name=room_name, result=result, detail=detail
+            )
+
     def on_close(self) -> None:
         self.stop_hub()
         logging.getLogger("task1").removeHandler(self.handler)
+        self.audit_panel.close()
         self.root.destroy()
 
     # ---------------------------------------------------------------- 房间操作
@@ -400,6 +478,7 @@ class MonitorApp:
             messagebox.showerror("创建失败", str(exc))
             return
         self._append(f"* 已创建聊天室「{room.name}」→ {room.address}", "notice")
+        self._audit("ROOM_CREATE", target=room.name, room_name=room.name, detail=room.address)
         self._refresh_all_now()
 
     def close_selected_room(self) -> None:
@@ -420,6 +499,9 @@ class MonitorApp:
             return
         if not self.hub.close_room(room_id):
             self._append(f"! 关闭失败：聊天室 {room_id} 已不存在", "warning")
+            self._audit("ROOM_CLOSE", target=room.name, room_name=room.name, result="failed")
+        else:
+            self._audit("ROOM_CLOSE", target=room.name, room_name=room.name, detail=room.address)
         if self.monitor_room_id == room_id:
             self.stop_monitor()
             self._append("* 正在监控的房间已关闭，已退出房间监控", "notice")
@@ -519,10 +601,15 @@ class MonitorApp:
             messagebox.showinfo("未选择", "请先在下方选择一个在线用户")
             return
         room_id_text, _, name = selection[0].partition("|")
+        room = self.hub.get_room(int(room_id_text))
+        room_name = room.name if room is not None else ""
         if not messagebox.askyesno("确认踢出", f"确定把 {name} 请出该聊天室吗？"):
             return
         if not self.hub.kick(int(room_id_text), name):
             self._append(f"! 踢出失败：{name} 已不在线", "warning")
+            self._audit("KICK", target=name, room_name=room_name, result="failed")
+        else:
+            self._audit("KICK", target=name, room_name=room_name)
         self._refresh_all_now()
 
     def broadcast_all(self) -> None:
@@ -535,6 +622,7 @@ class MonitorApp:
             return
         delivered = self.hub.broadcast_all(text)
         self._append(f"* 全服公告已送达 {delivered} 人：{text}", "notice")
+        self._audit("BROADCAST", target="全服", detail=text[:100])
         self.notice_var.set("")
 
     # ---------------------------------------------------------------- 审批
@@ -550,8 +638,10 @@ class MonitorApp:
         room = self.hub.approve_request(int(selection[0]))
         if room is None:
             self._append("! 批准失败（申请可能已处理或房间重名）", "warning")
+            self._audit("ROOM_APPROVE", target=selection[0], result="failed")
         else:
             self._append(f"* 已批准申请，聊天室「{room.name}」→ {room.address}", "notice")
+            self._audit("ROOM_APPROVE", target=selection[0], room_name=room.name)
         self._refresh_all_now()
 
     def reject_selected_request(self) -> None:
@@ -569,6 +659,7 @@ class MonitorApp:
             return
         if self.hub.reject_request(int(selection[0]), reason.strip() or "服务器未批准该申请"):
             self._append(f"* 已拒绝申请并回复：{reason}", "notice")
+            self._audit("ROOM_REJECT", target=selection[0], detail=reason[:100])
         self._refresh_all_now()
 
     # ---------------------------------------------------------------- 日志
@@ -694,6 +785,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PORT,
         help="控制端口（默认 9000）；填 0 表示由系统自动分配，启动后窗口会显示真实端口",
     )
+    parser.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help="任务2 审计数据库路径（默认 data/chat_ops.db）；启动注册中心时自动建库",
+    )
     return parser
 
 
@@ -712,7 +808,7 @@ def bring_to_front(root: tk.Tk) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = tk.Tk()
-    app = MonitorApp(root, args.host, args.port)
+    app = MonitorApp(root, args.host, args.port, db_path=args.db)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     bring_to_front(root)
     root.mainloop()
